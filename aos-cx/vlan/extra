@@ -1,0 +1,109 @@
+
+    # ---------------------------------------------------------------------
+    # 3) Ist-Zustand des Switches abfragen: Welche VLANs sind aktuell konfiguriert?
+    #    Diese Facts dienen als Grundlage für den Abgleich "Soll vs. Ist" im
+    #    nächsten Task (Löschen nicht mehr benötigter VLANs).
+    # ---------------------------------------------------------------------
+    - name: 3. Aktuell konfigurierte VLAN-IDs auf dem Switch ermitteln
+      arubanetworks.aoscx.aoscx_facts:
+        gather_subset: []
+        gather_network_resources:
+          - vlans
+      register: aoscx_facts_out
+
+    # ---------------------------------------------------------------------
+    # 4) Alle VLANs löschen, die auf dem Switch existieren, aber nicht (mehr)
+    #    in vlans.yml gelistet sind. Das hält die Switch-Konfiguration
+    #    deckungsgleich mit der zentralen VLAN-Liste (Konfigurationsdrift
+    #    wird rückgängig gemacht).
+    #    - VLAN 1 wird immer ausgeschlossen, da es das Default-VLAN ist und
+    #      auf AOS-CX-Geräten i.d.R. nicht gelöscht werden kann/darf.
+    #    - Der Task greift nur, wenn "vlan_cleanup=true" explizit gesetzt
+    #      wurde (siehe Kommentar bei der Variable oben), um versehentliches
+    #      Löschen produktiv genutzter VLANs zu verhindern.
+    # ---------------------------------------------------------------------
+    - name: 4. Nicht in vlans.yml gelistete VLANs löschen
+      arubanetworks.aoscx.aoscx_vlan:
+        vlan_id: "{{ item.vlan_id }}"
+        state: delete
+      loop: "{{ aoscx_facts_out.ansible_network_resources.vlans | default([]) }}"
+      loop_control:
+        label: "VLAN {{ item.vlan_id }}"
+      when:
+        - (item.vlan_id | int) not in (vlans | map(attribute='id') | map('int') | list)
+        - (item.vlan_id | int) != 1
+        - vlan_cleanup | default(false) | bool
+
+    # ---------------------------------------------------------------------
+    # 5) Facts erneut abrufen, da sich der VLAN-Bestand durch das Löschen in
+    #    Schritt 4 geändert haben kann. Die Validierung weiter unten muss auf
+    #    dem tatsächlichen End-Zustand basieren, nicht auf dem Stand vor dem
+    #    Cleanup.
+    # ---------------------------------------------------------------------
+    - name: 5. Facts der aktuell konfigurierten VLANs abrufen
+      arubanetworks.aoscx.aoscx_facts:
+        gather_subset: []
+        gather_network_resources:
+          - vlans
+      register: aoscx_facts_out
+
+    # ---------------------------------------------------------------------
+    # 6) Für die Validierung von dhcpv4-snooping wird die komplette
+    #    Running-Config als Text benötigt, da dieses Attribut - wie in
+    #    Schritt 2 erläutert - nicht über REST-Facts abrufbar ist.
+    #    aoscx_command führt CLI-Show-Befehle über SSH aus und liefert die
+    #    Textausgabe zur weiteren Auswertung zurück.
+    # ---------------------------------------------------------------------
+    - name: 6. Running-Config für DHCPv4-Snooping-Prüfung abrufen
+      arubanetworks.aoscx.aoscx_command:
+        commands:
+          - show running-config
+      register: running_config
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+
+    # ---------------------------------------------------------------------
+    # 7) Abschließende Validierung pro VLAN aus vlans.yml:
+    #    - Name-Abgleich erfolgt gegen die REST-Facts (device_vlan).
+    #    - dhcpv4-snooping-Abgleich erfolgt über einen Regex, der den
+    #      Config-Abschnitt der jeweiligen VLAN aus der Running-Config-Textausgabe
+    #      herausschneidet (von "vlan <id>" bis zur nächsten "vlan "-Zeile
+    #      oder dem Ende der Ausgabe) und darin nach der Zeile "dhcpv4-snooping" sucht.
+    #    - "ignore_errors: true" verhindert, dass der Loop beim ersten
+    #      fehlerhaften VLAN abbricht; stattdessen werden alle VLANs geprüft
+    #      und die Ergebnisse für die Zusammenfassung in Schritt 8 gesammelt.
+    # ---------------------------------------------------------------------
+    - name: 7. VLAN-Konfiguration validieren
+      vars:
+        configured_vlans: "{{ aoscx_facts_out.ansible_network_resources.vlans | default([]) }}"
+        device_vlan: "{{ (configured_vlans | selectattr('vlan_id', 'equalto', item.id) | list | first) | default({}) }}"
+        # \r\n wird vor der Regex-Suche normalisiert, da SSH-Show-Ausgaben oft CRLF statt LF enthalten
+        normalized_config: "{{ running_config.stdout[0] | regex_replace('\\r\\n', '\\n') }}"
+        vlan_block: "{{ normalized_config | regex_search('(?ms)^vlan ' + (item.id | string) + '\\b.*?(?=^vlan [0-9]|\\Z)') | default('') }}"
+      ansible.builtin.assert:
+        that:
+          - device_vlan.name | default('') == item.name
+          - not (item.dhcpv4_snooping | default(false)) or ('dhcpv4-snooping' in vlan_block)
+        fail_msg: "VLAN {{ item.id }} ({{ item.name }}): FEHLER"
+        success_msg: "VLAN {{ item.id }} ({{ item.name }}): OK"
+      loop: "{{ vlans }}"
+      loop_control:
+        label: "VLAN {{ item.id }}"
+      ignore_errors: true
+      register: validation_results
+
+    # ---------------------------------------------------------------------
+    # 8) Kompakte Gesamtübersicht am Ende des Playbook-Laufs: Anzahl und IDs
+    #    der VLANs, bei denen die Validierung in Schritt 7 fehlschlagen ist.
+    #    Damit muss nicht die komplette (u.U. sehr lange) Task-Ausgabe pro
+    #    VLAN durchsucht werden, um den Gesamtstatus zu erkennen.
+    # ---------------------------------------------------------------------
+    - name: 8. Validierungs-Zusammenfassung
+      ansible.builtin.debug:
+        msg: >-
+          {{ validation_results.results | selectattr('failed', 'defined') | selectattr('failed') | length }}
+          von {{ vlans | length }} VLANs fehlerhaft:
+          {{ validation_results.results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item.id') | list }}

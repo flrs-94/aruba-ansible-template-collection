@@ -1,0 +1,67 @@
+---
+# ============================================================================
+# EN: Target state ("source of truth") for all VLANs on the AOS-CX switch(es).
+#     The switch_attributes.yml playbook reads this file and makes the switch
+#     match it exactly: missing VLANs are created, names are corrected and –
+#     if enabled – VLANs that are no longer listed here get removed.
+#
+# DE: Soll-Zustand ("Source of Truth") aller VLANs auf dem/den AOS-CX-Switch(es).
+#     Das Playbook switch_attributes.yml liest diese Datei und gleicht den
+#     Switch exakt darauf ab: fehlende VLANs werden angelegt, Namen korrigiert
+#     und – falls aktiviert – hier nicht mehr gelistete VLANs entfernt.
+# ----------------------------------------------------------------------------
+# EN: Schema per list entry
+#   id                (int, required)  VLAN ID, 1–4094
+#   name              (str, required)  VLAN name shown on the switch
+#   voice             (bool, optional) mark as voice VLAN (IP phones)
+#   ip_igmp_snooping  (bool, optional) enable IGMP snooping (IPv4 multicast)
+#   dhcpv4_snooping   (bool, optional) enable DHCPv4 snooping; applied via CLI
+#                                      because the REST module cannot set it
+#   Any optional key that is omitted is simply left at the switch default.
+#
+# DE: Schema je Listeneintrag
+#   id                (int, Pflicht)   VLAN-ID, 1–4094
+#   name              (str, Pflicht)   VLAN-Name auf dem Switch
+#   voice             (bool, optional) als Voice-VLAN markieren (IP-Telefone)
+#   ip_igmp_snooping  (bool, optional) IGMP-Snooping aktivieren (IPv4-Multicast)
+#   dhcpv4_snooping   (bool, optional) DHCPv4-Snooping aktivieren; wird per CLI
+#                                      gesetzt, da das REST-Modul dies nicht kann
+#   Nicht gesetzte optionale Schlüssel bleiben auf dem Switch-Standardwert.
+# ----------------------------------------------------------------------------
+# EN: The list below is a generic EXAMPLE. Replace it with your own VLANs.
+# DE: Die folgende Liste ist ein generisches BEISPIEL. Durch eigene VLANs ersetzen.
+# ============================================================================
+vlans:
+  # --- Infrastructure / transport --------------------------------------------
+  - { id: 1, name: "default", ip_igmp_snooping: true }
+  - { id: 10, name: "uplink-to-core" }
+  - { id: 20, name: "routing-misc" }
+
+  # --- End devices ----------------------------------------------------------
+  - { id: 100, name: "clients-wired" }
+  - { id: 110, name: "clients-wireless", ip_igmp_snooping: true }
+  - { id: 120, name: "voice", voice: true, dhcpv4_snooping: true, ip_igmp_snooping: true }
+  - { id: 130, name: "guest-internet-only", ip_igmp_snooping: true }
+  - { id: 140, name: "printers" }
+
+  # --- Servers ------------------------------------------------------------
+  - { id: 200, name: "servers-general" }
+  - { id: 201, name: "servers-database" }
+  - { id: 202, name: "servers-application" }
+  - { id: 210, name: "voice-infrastructure", voice: true }
+
+  # --- Building management / IoT (DHCP snooping on by policy) ----------------
+  - { id: 600, name: "bms-hvac", dhcpv4_snooping: true, ip_igmp_snooping: true }
+  - { id: 605, name: "bms-lighting", dhcpv4_snooping: true, ip_igmp_snooping: true }
+  - { id: 610, name: "bms-access-control", dhcpv4_snooping: true, ip_igmp_snooping: true }
+  - { id: 615, name: "bms-cctv", dhcpv4_snooping: true, ip_igmp_snooping: true }
+
+  # --- Management ----------------------------------------------------------
+  - { id: 400, name: "management-wired" }
+  - { id: 410, name: "management-wireless" }
+  - { id: 420, name: "management-non-network" }
+
+  # --- Isolation / special ---------------------------------------------------
+  - { id: 810, name: "quarantine" }
+  - { id: 900, name: "dmz" }
+  - { id: 901, name: "dmz-voice", voice: true }

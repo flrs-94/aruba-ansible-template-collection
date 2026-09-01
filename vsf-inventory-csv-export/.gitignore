@@ -1,0 +1,23 @@
+# EN: keep this module publishable as a standalone repo - never track secrets or
+#     generated reports. / DE: dieses Modul als eigenstaendiges Repo veroeffentlichbar
+#     halten - keine Geheimnisse oder erzeugten Berichte versionieren.
+
+# Real inventory (contains addresses/credentials) / echtes Inventory (Adressen/Zugangsdaten)
+inventory.yml
+inventory*.yml
+!inventory.example.yml
+
+# Generated reports (contain your real topology, serials, MACs) / erzeugte Berichte
+exports/*
+!exports/.gitkeep
+
+# Python / Ansible caches
+__pycache__/
+*.py[cod]
+.ruff_cache/
+*.retry
+
+# Editor
+*.code-workspace
+.vscode/
+.idea/

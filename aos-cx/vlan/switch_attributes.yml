@@ -1,0 +1,247 @@
+---
+# ============================================================================
+# EN: Manage AOS-CX VLANs from a single source of truth (vlans.yml).
+#     The playbook creates/updates every listed VLAN, optionally deletes VLANs
+#     that are no longer listed, and finally validates the result on the switch.
+#
+# DE: AOS-CX-VLANs aus einer einzigen Source of Truth (vlans.yml) verwalten.
+#     Das Playbook legt jedes gelistete VLAN an bzw. aktualisiert es, löscht
+#     optional nicht mehr gelistete VLANs und validiert am Ende das Ergebnis
+#     auf dem Switch.
+#
+# EN: Run:  ansible-playbook -i ../switch_hosts.yml switch_attributes.yml
+#     Add ` -e vlan_cleanup=true` to also delete VLANs missing from vlans.yml.
+# DE: Aufruf: ansible-playbook -i ../switch_hosts.yml switch_attributes.yml
+#     Mit ` -e vlan_cleanup=true` werden zusätzlich fehlende VLANs gelöscht.
+# ============================================================================
+- name: Manage and validate AOS-CX VLANs
+  hosts: all
+  # EN: No Ansible facts are gathered from the switch; all data comes from
+  #     vlans.yml and from the dedicated aoscx_facts task below.
+  # DE: Es werden keine Ansible-Facts vom Switch gesammelt; alle Daten stammen
+  #     aus vlans.yml und aus dem gezielten aoscx_facts-Task weiter unten.
+  gather_facts: false
+
+  # EN: Load the target VLAN list.
+  # DE: Lädt die Soll-VLAN-Liste.
+  vars_files:
+    - vlans.yml
+
+  vars:
+    # EN: The AOS-CX collection offers two transports: REST (pyaoscx) and SSH
+    #     (network_cli). REST is the default here because most modules
+    #     (aoscx_vlan, aoscx_facts) only work over it. Modules that must send
+    #     raw CLI commands (aoscx_config, aoscx_command) override the connection
+    #     to SSH per task (see below).
+    # DE: Die AOS-CX-Collection bietet zwei Verbindungswege: REST (pyaoscx) und
+    #     SSH (network_cli). REST ist hier die Standard-Verbindung, weil die
+    #     meisten Module (aoscx_vlan, aoscx_facts) nur darüber funktionieren.
+    #     Module, die zwingend CLI-Befehle senden (aoscx_config, aoscx_command),
+    #     überschreiben die Verbindung pro Task lokal auf SSH (siehe unten).
+    ansible_connection: arubanetworks.aoscx.aoscx
+    ansible_network_os: arubanetworks.aoscx.aoscx
+
+    # EN: Safety switch for the VLAN deletion task further down. Disabled by
+    #     default so a normal run never accidentally removes VLANs. Enable it
+    #     explicitly with `ansible-playbook ... -e vlan_cleanup=true`.
+    # DE: Sicherheitssperre für den Lösch-Task weiter unten. Standardmäßig
+    #     deaktiviert, damit ein normaler Lauf niemals versehentlich VLANs
+    #     entfernt. Nur mit `ansible-playbook ... -e vlan_cleanup=true` wird der
+    #     Lösch-Task scharf geschaltet.
+    vlan_cleanup: false
+
+  tasks:
+    # ---------------------------------------------------------------------
+    # EN: 1) Create/update VLANs to match the target state (vlans.yml).
+    #        aoscx_vlan is idempotent: existing VLANs are only adjusted, not
+    #        recreated or duplicated.
+    # DE: 1) VLANs gemäß Soll-Zustand (vlans.yml) anlegen/aktualisieren.
+    #        aoscx_vlan ist idempotent: bereits vorhandene VLANs werden nur
+    #        angepasst, nicht neu erstellt oder doppelt angelegt.
+    # ---------------------------------------------------------------------
+    - name: 1. Create / update VLANs
+      arubanetworks.aoscx.aoscx_vlan:
+        vlan_id: "{{ item.id }}"
+        name: "{{ item.name }}"
+        # EN: `omit` keeps the module from receiving an empty/None value for
+        #     attributes not set for this VLAN in vlans.yml.
+        # DE: `omit` verhindert, dass das Modul einen leeren/None-Wert für
+        #     Attribute erhält, die in vlans.yml für dieses VLAN nicht gesetzt sind.
+        voice: "{{ item.voice | default(omit) }}"
+        ip_igmp_snooping: "{{ item.ip_igmp_snooping | default(omit) }}"
+        state: create
+      loop: "{{ vlans }}"
+      loop_control:
+        label: "VLAN {{ item.id }} - {{ item.name }}"
+
+    # ---------------------------------------------------------------------
+    # EN: 2) DHCPv4 snooping is not exposed by the REST module aoscx_vlan (the
+    #        collection's pyaoscx API does not support this attribute yet).
+    #        So aoscx_config is used to send raw CLI lines over SSH. The
+    #        connection must therefore be switched to network_cli/SSH per task
+    #        via task-local `vars` – otherwise the task fails with
+    #        "Method not found" because the REST connection lacks this method.
+    # DE: 2) DHCPv4-Snooping ist im REST-Modul aoscx_vlan nicht abbildbar (die
+    #        pyaoscx-API der Collection unterstützt dieses Attribut aktuell nicht).
+    #        Daher wird auf aoscx_config zurückgegriffen, das rohe CLI-Zeilen
+    #        über SSH sendet. Die Connection muss für genau diesen Task per
+    #        task-lokalen `vars` auf network_cli/SSH umgeschaltet werden – sonst
+    #        schlägt der Task mit "Method not found" fehl, weil die
+    #        REST-Verbindung diese Methode nicht kennt.
+    # ---------------------------------------------------------------------
+    - name: 2. Enable DHCPv4 snooping on selected VLANs
+      arubanetworks.aoscx.aoscx_config:
+        lines:
+          - "vlan {{ item.id }}"
+          - "dhcpv4-snooping"
+      loop: "{{ vlans }}"
+      loop_control:
+        label: "VLAN {{ item.id }}"
+      # EN: Only for VLANs that explicitly set `dhcpv4_snooping: true` in vlans.yml.
+      # DE: Nur für VLANs, die in vlans.yml explizit `dhcpv4_snooping: true` haben.
+      when: item.dhcpv4_snooping | default(false)
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+
+    # ---------------------------------------------------------------------
+    # EN: 3) Read the switch's current state: which VLANs are configured now?
+    #        These facts are the basis for the target-vs-actual comparison in
+    #        the next task (deleting VLANs that are no longer needed).
+    # DE: 3) Ist-Zustand des Switches abfragen: Welche VLANs sind aktuell
+    #        konfiguriert? Diese Facts dienen als Grundlage für den Abgleich
+    #        "Soll vs. Ist" im nächsten Task (Löschen nicht mehr benötigter VLANs).
+    # ---------------------------------------------------------------------
+    - name: 3. Gather VLAN IDs currently configured on the switch
+      arubanetworks.aoscx.aoscx_facts:
+        gather_subset: []
+        gather_network_resources:
+          - vlans
+      register: aoscx_facts_out
+
+    # ---------------------------------------------------------------------
+    # EN: 4) Delete every VLAN that exists on the switch but is not (any longer)
+    #        listed in vlans.yml. This keeps the switch config in sync with the
+    #        central VLAN list (config drift is reverted).
+    #        - VLAN 1 is always excluded: it is the default VLAN and usually
+    #          cannot / must not be deleted on AOS-CX devices.
+    #        - The task only runs when `vlan_cleanup=true` is set explicitly
+    #          (see the variable comment above), to prevent accidental deletion
+    #          of VLANs that are in production use.
+    # DE: 4) Alle VLANs löschen, die auf dem Switch existieren, aber nicht (mehr)
+    #        in vlans.yml gelistet sind. Das hält die Switch-Konfiguration
+    #        deckungsgleich mit der zentralen VLAN-Liste (Konfigurationsdrift
+    #        wird rückgängig gemacht).
+    #        - VLAN 1 wird immer ausgeschlossen (Default-VLAN, auf AOS-CX i.d.R.
+    #          nicht löschbar).
+    #        - Der Task greift nur bei explizit gesetztem `vlan_cleanup=true`
+    #          (siehe Kommentar bei der Variable oben), um versehentliches
+    #          Löschen produktiv genutzter VLANs zu verhindern.
+    # ---------------------------------------------------------------------
+    - name: 4. Delete VLANs not listed in vlans.yml
+      arubanetworks.aoscx.aoscx_vlan:
+        vlan_id: "{{ item.vlan_id }}"
+        state: delete
+      loop: "{{ aoscx_facts_out.ansible_network_resources.vlans | default([]) }}"
+      loop_control:
+        label: "VLAN {{ item.vlan_id }}"
+      when:
+        - (item.vlan_id | int) not in (vlans | map(attribute='id') | map('int') | list)
+        - (item.vlan_id | int) != 1
+        - vlan_cleanup | default(false) | bool
+
+    # ---------------------------------------------------------------------
+    # EN: 5) Gather facts again: the VLAN inventory may have changed due to the
+    #        deletions in step 4. The validation below must run against the
+    #        actual end state, not the state before cleanup.
+    # DE: 5) Facts erneut abrufen: Der VLAN-Bestand kann sich durch das Löschen
+    #        in Schritt 4 geändert haben. Die Validierung weiter unten muss auf
+    #        dem tatsächlichen End-Zustand basieren, nicht auf dem Stand vor
+    #        dem Cleanup.
+    # ---------------------------------------------------------------------
+    - name: 5. Re-gather facts of currently configured VLANs
+      arubanetworks.aoscx.aoscx_facts:
+        gather_subset: []
+        gather_network_resources:
+          - vlans
+      register: aoscx_facts_out
+
+    # ---------------------------------------------------------------------
+    # EN: 6) Validating dhcpv4-snooping needs the full running-config as text,
+    #        since – as explained in step 2 – this attribute is not available
+    #        via REST facts. aoscx_command runs CLI show commands over SSH and
+    #        returns the text output for further evaluation.
+    # DE: 6) Für die Validierung von dhcpv4-snooping wird die komplette
+    #        Running-Config als Text benötigt, da dieses Attribut – wie in
+    #        Schritt 2 erläutert – nicht über REST-Facts abrufbar ist.
+    #        aoscx_command führt CLI-Show-Befehle über SSH aus und liefert die
+    #        Textausgabe zur weiteren Auswertung zurück.
+    # ---------------------------------------------------------------------
+    - name: 6. Fetch running-config for the DHCPv4 snooping check
+      arubanetworks.aoscx.aoscx_command:
+        commands:
+          - show running-config
+      register: running_config
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=no
+          -o UserKnownHostsFile=/dev/null
+
+    # ---------------------------------------------------------------------
+    # EN: 7) Final per-VLAN validation for every VLAN in vlans.yml:
+    #        - Name check is done against the REST facts (device_vlan).
+    #        - dhcpv4-snooping check uses a regex that cuts out the config
+    #          section of the given VLAN from the running-config text (from
+    #          "vlan <id>" up to the next "vlan " line or end of output) and
+    #          looks for the line "dhcpv4-snooping" in it.
+    #        - `ignore_errors: true` keeps the loop from aborting on the first
+    #          failing VLAN; instead every VLAN is checked and the results are
+    #          collected for the summary in step 8.
+    # DE: 7) Abschließende Validierung pro VLAN aus vlans.yml:
+    #        - Name-Abgleich gegen die REST-Facts (device_vlan).
+    #        - dhcpv4-snooping-Abgleich über einen Regex, der den Config-Abschnitt
+    #          der jeweiligen VLAN aus der Running-Config herausschneidet (von
+    #          "vlan <id>" bis zur nächsten "vlan "-Zeile bzw. Ende der Ausgabe)
+    #          und darin nach der Zeile "dhcpv4-snooping" sucht.
+    #        - `ignore_errors: true` verhindert, dass der Loop beim ersten
+    #          fehlerhaften VLAN abbricht; stattdessen werden alle VLANs geprüft
+    #          und die Ergebnisse für die Zusammenfassung in Schritt 8 gesammelt.
+    # ---------------------------------------------------------------------
+    - name: 7. Validate VLAN configuration
+      vars:
+        configured_vlans: "{{ aoscx_facts_out.ansible_network_resources.vlans | default([]) }}"
+        device_vlan: "{{ (configured_vlans | selectattr('vlan_id', 'equalto', item.id) | list | first) | default({}) }}"
+        # EN: normalize \r\n before the regex search – SSH show output often uses CRLF instead of LF
+        # DE: \r\n wird vor der Regex-Suche normalisiert, da SSH-Show-Ausgaben oft CRLF statt LF enthalten
+        normalized_config: "{{ running_config.stdout[0] | regex_replace('\\r\\n', '\\n') }}"
+        vlan_block: "{{ normalized_config | regex_search('(?ms)^vlan ' + (item.id | string) + '\\b.*?(?=^vlan [0-9]|\\Z)') | default('') }}"
+      ansible.builtin.assert:
+        that:
+          - device_vlan.name | default('') == item.name
+          - not (item.dhcpv4_snooping | default(false)) or ('dhcpv4-snooping' in vlan_block)
+        fail_msg: "VLAN {{ item.id }} ({{ item.name }}): FAILED / FEHLGESCHLAGEN"
+        success_msg: "VLAN {{ item.id }} ({{ item.name }}): OK"
+      loop: "{{ vlans }}"
+      loop_control:
+        label: "VLAN {{ item.id }}"
+      ignore_errors: true
+      register: validation_results
+
+    # ---------------------------------------------------------------------
+    # EN: 8) Compact overall summary at the end of the run: count and IDs of
+    #        the VLANs whose validation failed in step 7. Saves scanning the
+    #        (possibly very long) per-VLAN task output to see the overall status.
+    # DE: 8) Kompakte Gesamtübersicht am Ende des Laufs: Anzahl und IDs der
+    #        VLANs, bei denen die Validierung in Schritt 7 fehlgeschlagen ist.
+    #        Damit muss nicht die komplette (u.U. sehr lange) Task-Ausgabe pro
+    #        VLAN durchsucht werden, um den Gesamtstatus zu erkennen.
+    # ---------------------------------------------------------------------
+    - name: 8. Validation summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ validation_results.results | selectattr('failed', 'defined') | selectattr('failed') | length }}
+          of {{ vlans | length }} VLANs failed:
+          {{ validation_results.results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item.id') | list }}

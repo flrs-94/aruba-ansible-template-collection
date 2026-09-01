@@ -1,0 +1,28 @@
+# Python / Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.venv/
+venv/
+
+# Ansible / Ansible
+*.retry
+.ansible/
+
+# VSF inventory CSV export – real inventory + generated output / echtes Inventory + Ausgabe
+vsf-inventory-csv-export/inventory.yml
+vsf-inventory-csv-export/inventory*.yml
+!vsf-inventory-csv-export/inventory.example.yml
+vsf-inventory-csv-export/exports/*
+!vsf-inventory-csv-export/exports/.gitkeep
+
+# Editor / Editor
+*.code-workspace
+.idea/
+.vscode/
+
+# OS / Betriebssystem
+.DS_Store
+Thumbs.db
