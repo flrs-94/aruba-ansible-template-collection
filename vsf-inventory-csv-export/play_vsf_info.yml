@@ -1,0 +1,157 @@
+---
+# EN: Runs an SSH-based VSF inventory against a list of Aruba switches (see
+#     inventory.example.yml) and exports the result as CSV. It auto-detects whether a switch is
+#     AOS-CX or AOS-S - both platforms provide "show vsf detail" over CLI/SSH
+#     (vsf_ssh_inventory.py); REST is deliberately avoided.
+# DE: Fuehrt eine SSH-basierte VSF-Inventur ueber eine Liste von Aruba-Switches aus (siehe
+#     inventory.example.yml) und exportiert das Ergebnis als CSV. Erkennt selbststaendig, ob ein
+#     Switch AOS-CX oder AOS-S ist - beide Plattformen liefern "show vsf detail" ueber CLI/SSH;
+#     auf REST wird bewusst verzichtet.
+
+- name: Query VSF information from Aruba switches via SSH
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    # EN: 'ansible_playbook_python' ensures the same interpreter / venv (with paramiko) is used.
+    # DE: 'ansible_playbook_python' stellt sicher, dass derselbe Interpreter / dasselbe venv
+    #     (mit paramiko) verwendet wird.
+    - name: 1.1. Run the SSH VSF inventory helper
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/vsf_ssh_inventory.py"
+          - "--host"
+          - "{{ hostvars[inventory_hostname].ansible_host }}"
+          - "--user"
+          - "{{ hostvars[inventory_hostname].ansible_user }}"
+          - "--password"
+          - "{{ hostvars[inventory_hostname].ansible_password }}"
+      register: vsf_raw
+      delegate_to: localhost
+      changed_when: false
+      no_log: true  # EN: hides the switch password from the log / DE: verbirgt das Switch-Passwort im Log
+
+    # EN: 'from_json' turns the script's JSON output into an Ansible data structure.
+    # DE: 'from_json' wandelt die JSON-Ausgabe des Skripts in eine Ansible-Datenstruktur um.
+    - name: 1.2. Store the parsed result as a fact
+      ansible.builtin.set_fact:
+        vsf_result: "{{ vsf_raw.stdout | from_json }}"
+
+    # EN: Surface a hint whenever a host errored or the platform could not be identified.
+    # DE: Hinweis ausgeben, wenn ein Host einen Fehler meldet oder die Plattform unklar ist.
+    - name: 1.3. Report errors or an unknown platform
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: platform={{ vsf_result.platform }}{{ ' error=' ~ vsf_result.error if vsf_result.error else '' }}"
+      when: (vsf_result.platform not in ['AOS-CX', 'AOS-S']) or (vsf_result.error is not none)
+
+    # EN: Flat one-row-per-member list for the export, enriched with host/ip/platform and the
+    #     stack-wide image + vsf_health fields (the per-member VSF link fields already come from
+    #     the Python script). "(vsf_result.members or [{}])" makes sure hosts without any member
+    #     (offline / error) still produce exactly one row - otherwise an "offline" stack would
+    #     not appear in the export at all.
+    # DE: Flache Liste (eine Zeile je Member) fuer den Export, angereichert um host/ip/platform und
+    #     die stack-weiten Image- + vsf_health-Felder (die VSF-Link-Felder je Member kommen schon
+    #     aus dem Python-Skript). "(vsf_result.members or [{}])" sorgt dafuer, dass auch Hosts ohne
+    #     Member (offline / Fehler) genau eine Zeile erhalten - sonst taucht ein "offline"-Stack
+    #     im Export gar nicht auf.
+    - name: 1.4. Build the export rows for this host
+      ansible.builtin.set_fact:
+        vsf_csv_rows: >-
+          {{ (vsf_result.members or [{}])
+             | map('combine', {
+                 'host': vsf_result.hostname | default(inventory_hostname, true),
+                 'ip': vsf_result.ip | default(hostvars[inventory_hostname].ansible_host, true),
+                 'platform': vsf_result.platform,
+                 'primary_image': vsf_result.primary_image | default('N/A', true),
+                 'secondary_image': vsf_result.secondary_image | default('N/A', true),
+                 'active_boot_image': vsf_result.active_boot_image | default('N/A', true),
+                 'vsf_health': vsf_result.vsf_health | default('offline', true)
+               })
+             | list }}
+
+# EN: Aggregates the per-host facts and writes them to a single CSV file.
+# DE: Aggregiert die pro Host gesammelten Facts und schreibt sie in eine einzige CSV-Datei.
+- name: Export the VSF inventory as CSV
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: 2.1. Determine the file-name timestamp once
+      ansible.builtin.set_fact:
+        export_timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+
+    - name: 2.2. Collect the CSV rows from all hosts
+      ansible.builtin.set_fact:
+        vsf_csv_rows_all: >-
+          {{ groups['all'] | map('extract', hostvars, 'vsf_csv_rows')
+             | select('defined') | list | sum(start=[]) }}
+
+    # EN: Column order (see vsf_csv_header):
+    #     - "VSF-Status" first: overall stack state (healthy/degraded/offline). Plain text -
+    #       CSV cannot carry cell colours; colour it e.g. in Excel via conditional formatting.
+    #     - "Label": unique identifier per stack member (<hostname>-<member_id>)
+    #     - then the device columns (Hostname ... Priority)
+    #     - finally the per-member VSF link ports/status and the stack-wide image info
+    #     Each data row is assembled as a list and joined with ';'; the "| default('N/A', true)"
+    #     filters cover offline hosts, which only have the enriched fields.
+    # DE: Spaltenreihenfolge (siehe vsf_csv_header):
+    #     - "VSF-Status" ganz vorne: Gesamtzustand des Stacks. Reiner Text - CSV kann keine
+    #       Zellfarben transportieren; die Einfaerbung macht man z. B. in Excel per bedingter
+    #       Formatierung auf dieser Spalte.
+    #     - "Label": eindeutiger Bezeichner je Stack-Member (<hostname>-<member_id>)
+    #     - danach die Geraetespalten, am Ende die VSF-Link- und Image-Infos.
+    #     Jede Datenzeile wird als Liste zusammengestellt und mit ';' verbunden; die
+    #     "| default('N/A', true)"-Filter fangen offline-Hosts ab (nur angereicherte Felder).
+    - name: 2.3. Write the CSV file (header + data rows)
+      vars:
+        vsf_csv_header:
+          - VSF-Status
+          - Label
+          - Hostname
+          - IP-Address
+          - Platform
+          - Member ID
+          - Status
+          - MAC Address
+          - Type
+          - Model
+          - Serial Number
+          - Uptime
+          - Priority
+          - VSF Link 1 - Port
+          - VSF Link 1 - Status
+          - VSF Link 2 - Port
+          - VSF Link 2 - Status
+          - Primary Image
+          - Secondary Image
+          - Active Boot Image
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/exports/vsf_export_{{ export_timestamp }}.csv"
+        mode: "0644"
+        content: |
+          {{ vsf_csv_header | join(';') }}
+          {% for row in vsf_csv_rows_all %}
+          {{ [
+               row.vsf_health | default('offline', true),
+               row.host ~ '-' ~ (row.member_id | default('N/A', true)),
+               row.host,
+               row.ip,
+               row.platform,
+               row.member_id | default('N/A', true),
+               row.status | default('N/A', true),
+               row.mac_address | default('N/A', true),
+               row.type | default('N/A', true),
+               row.model | default('N/A', true),
+               row.serial_number | default('N/A', true),
+               row.uptime | default('N/A', true),
+               row.priority | default('N/A', true),
+               row.vsf_link1_port | default('N/A', true),
+               row.vsf_link1_status | default('N/A', true),
+               row.vsf_link2_port | default('N/A', true),
+               row.vsf_link2_status | default('N/A', true),
+               row.primary_image,
+               row.secondary_image,
+               row.active_boot_image,
+             ] | join(';') }}
+          {% endfor %}

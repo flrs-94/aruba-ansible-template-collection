@@ -1,0 +1,19 @@
+---
+# EN: Example inventory for the AOS-CX playbooks. Copy / adapt for your switches.
+#     NEVER commit real credentials – pass the password at runtime instead
+#     (-e ansible_password=..., --ask-pass) or use Ansible Vault.
+# DE: Beispiel-Inventory für die AOS-CX-Playbooks. Kopieren / an die eigenen
+#     Switches anpassen. NIEMALS echte Zugangsdaten committen – das Passwort zur
+#     Laufzeit übergeben (-e ansible_password=..., --ask-pass) oder Ansible Vault.
+all:
+  hosts:
+    aoscx_1:
+      ansible_host: 192.0.2.11              # management IP or DNS name
+  vars:
+    ansible_user: admin
+    ansible_password: CHANGEME               # placeholder – override at runtime / Vault
+    ansible_network_os: arubanetworks.aoscx.aoscx
+    ansible_connection: arubanetworks.aoscx.aoscx   # REST API via pyaoscx
+    ansible_aoscx_validate_certs: false
+    ansible_aoscx_use_proxy: false
+    ansible_acx_no_proxy: true

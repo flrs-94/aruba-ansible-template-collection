@@ -1,0 +1,26 @@
+---
+# EN: Example inventory - copy to "inventory.yml" and adjust for your switches.
+#     "inventory.yml" is git-ignored; only this .example file belongs in the repo.
+#     NEVER commit real credentials - supply the password at runtime instead, e.g.:
+#       ansible-playbook -i inventory.yml play_vsf_info.yml --ask-pass
+#     or via Ansible Vault / an environment lookup (see README).
+#
+# DE: Beispiel-Inventory - nach "inventory.yml" kopieren und an die eigenen Switches
+#     anpassen. "inventory.yml" ist per .gitignore ausgenommen; nur diese .example-Datei
+#     gehoert ins Repo. NIEMALS echte Zugangsdaten committen - das Passwort zur Laufzeit
+#     uebergeben (--ask-pass) oder ueber Ansible Vault / einen Env-Lookup (siehe README).
+
+all:
+  hosts:
+    # EN: address by management IP ... / DE: Adressierung per Management-IP ...
+    switch01:
+      ansible_host: 192.0.2.11
+    # EN: ... or by any resolvable DNS name / DE: ... oder per aufloesbarem DNS-Namen
+    switch02:
+      ansible_host: switch02.example.net
+
+  vars:
+    ansible_user: admin
+    # EN: placeholder only - override with --ask-pass, -e, or Vault.
+    # DE: nur Platzhalter - per --ask-pass, -e oder Vault ueberschreiben.
+    ansible_password: CHANGEME
