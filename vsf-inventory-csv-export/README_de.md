@@ -55,10 +55,10 @@ all:
     switch01:
       ansible_host: 192.0.2.11
     switch02:
-      ansible_host: switch02.example.net
+      ansible_host: host.example.com
   vars:
-    ansible_user: admin
-    ansible_password: CHANGEME        # zur Laufzeit setzen: --ask-pass, -e oder Ansible Vault
+    ansible_user: example-user
+    ansible_password: YOUR_PASSWORD   # zur Laufzeit setzen: --ask-pass, -e oder Ansible Vault
 ```
 
 ---
@@ -231,7 +231,7 @@ Repository veröffentlichen lässt.
   nicht über git.
 - **Alle Beispiele nutzen Dokumentationsbereiche** – [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)-
   IPs (`192.0.2.0/24`), [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606)-Namen
-  (`example.net`), [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042#section-2.1.1)-
+  (`example.com`), [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042#section-2.1.1)-
   MACs (`00:00:5e:00:53:xx`), Platzhalter-Seriennummern. Aruba-Artikelnummern
   (`JL725A`) und Firmware-Strings sind öffentliche Produktinformationen.
 - **Aus einem größeren Repo herauslösen?** Mit einer frischen Historie starten

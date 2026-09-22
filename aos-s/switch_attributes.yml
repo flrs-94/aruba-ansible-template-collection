@@ -1,0 +1,116 @@
+---
+# ============================================================================
+# EN: Example configuration of an Aruba AOS-S switch over SSH (CLI):
+#     two LACP trunks, two VLANs (tagged/untagged, voice, jumbo, IP address),
+#     read back the result and save the configuration.
+#     Ports, VLAN IDs and the IP address are EXAMPLES – adapt them first.
+#
+# DE: Beispielkonfiguration eines Aruba-AOS-S-Switches per SSH (CLI):
+#     zwei LACP-Trunks, zwei VLANs (tagged/untagged, Voice, Jumbo, IP-Adresse),
+#     Ergebnis auslesen und Konfiguration speichern.
+#     Ports, VLAN-IDs und IP-Adresse sind BEISPIELE – vorher anpassen.
+#
+# EN: Run:  ansible-playbook -i switch_hosts.yml switch_attributes.yml
+# DE: Aufruf: ansible-playbook -i switch_hosts.yml switch_attributes.yml
+# ============================================================================
+- name: Configure and validate an Aruba AOS-S switch
+  hosts: all
+  gather_facts: false
+  collections:
+    - arubanetworks.aos_switch
+
+  vars:
+    # EN: arubaoss_config / arubaoss_command send raw CLI, so SSH (network_cli)
+    #     is used for the whole play instead of the inventory's REST default.
+    # DE: arubaoss_config / arubaoss_command senden rohe CLI-Befehle, daher wird
+    #     für das ganze Play SSH (network_cli) statt des REST-Standards aus dem
+    #     Inventory genutzt.
+    ansible_connection: ansible.netcommon.network_cli
+    ansible_network_os: arubanetworks.aos_switch.arubaoss
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+
+  tasks:
+    - name: Create LACP trunk trk1 on ports 9 and 10
+      arubanetworks.aos_switch.arubaoss_config:
+        lines:
+          - "trunk 9-10 trk1 lacp"
+
+    - name: Create LACP trunk trk2 on ports 7 and 8
+      arubanetworks.aos_switch.arubaoss_config:
+        lines:
+          - "trunk 7-8 trk2 lacp"
+
+    - name: Create VLAN 300 and tag it on trk1
+      arubanetworks.aos_switch.arubaoss_config:
+        parents:
+          - "vlan 300"
+        lines:
+          - "name vlan300"
+          - "tagged trk1"
+          - "jumbo"
+
+    # EN: The IP address is an RFC 5737 documentation address – replace it.
+    # DE: Die IP-Adresse ist eine RFC-5737-Dokumentationsadresse – ersetzen.
+    - name: Create and configure VLAN 200
+      arubanetworks.aos_switch.arubaoss_config:
+        parents:
+          - "vlan 200"
+        lines:
+          - "name vlan200"
+          - "untagged 5-6"
+          - "tagged trk1"
+          - "tagged trk2"
+          - "voice"
+          - "ip address 198.51.100.1 255.255.255.0"
+
+    # EN: The raw command output is hidden here and printed by the next task.
+    # DE: Die rohe Befehlsausgabe wird hier ausgeblendet und im nächsten Task ausgegeben.
+    - name: Read trunk and LACP status
+      arubanetworks.aos_switch.arubaoss_command:
+        commands:
+          - "show trunks"
+          - "show lacp"
+      register: lacp_result
+      changed_when: false
+      no_log: true
+
+    - name: Show trunk and LACP status
+      ansible.builtin.debug:
+        var: lacp_result.stdout_lines
+
+    - name: Read VLAN status
+      arubanetworks.aos_switch.arubaoss_command:
+        commands:
+          - "show vlan"
+          - "show vlan 200"
+          - "show vlan 300"
+      register: vlan_result
+      changed_when: false
+      no_log: true
+
+    - name: Show VLAN status
+      ansible.builtin.debug:
+        var: vlan_result.stdout_lines
+
+    - name: Check the IP address of VLAN 200
+      arubanetworks.aos_switch.arubaoss_command:
+        commands:
+          - "show vlan 200"
+          - "show ip"
+      register: vlan_200_ip_result
+      changed_when: false
+      no_log: true
+
+    - name: Show IP status
+      ansible.builtin.debug:
+        var: vlan_200_ip_result.stdout_lines
+
+    # EN: Persist the running configuration (write memory).
+    # DE: Laufende Konfiguration dauerhaft speichern (write memory).
+    - name: Save the configuration
+      arubanetworks.aos_switch.arubaoss_command:
+        commands:
+          - "write memory"
+      changed_when: true

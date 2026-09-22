@@ -58,8 +58,8 @@ all:
     aoscx_1:
       ansible_host: 192.0.2.11
   vars:
-    ansible_user: admin
-    ansible_password: CHANGEME          # prefer Ansible Vault or -e at runtime
+    ansible_user: example-user
+    ansible_password: YOUR_PASSWORD     # prefer Ansible Vault or -e at runtime
     ansible_network_os: arubanetworks.aoscx.aoscx
     ansible_connection: arubanetworks.aoscx.aoscx
     ansible_aoscx_validate_certs: false

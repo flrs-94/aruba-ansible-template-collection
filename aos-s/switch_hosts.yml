@@ -1,0 +1,19 @@
+---
+# EN: Example inventory for the AOS-S playbook. Copy / adapt for your switches.
+#     NEVER commit real credentials – pass the password at runtime instead
+#     (-e ansible_password=..., --ask-pass) or use Ansible Vault.
+# DE: Beispiel-Inventory für das AOS-S-Playbook. Kopieren / an die eigenen
+#     Switches anpassen. NIEMALS echte Zugangsdaten committen – das Passwort zur
+#     Laufzeit übergeben (-e ansible_password=..., --ask-pass) oder Ansible Vault.
+all:
+  hosts:
+    switch1:
+      ansible_host: 192.0.2.12              # management IP or DNS name
+      ansible_user: example-user
+      ansible_password: YOUR_PASSWORD        # placeholder – override at runtime / Vault
+      # EN: REST connection method of the arubaoss modules; switch_attributes.yml
+      #     overrides it per play with SSH (network_cli).
+      # DE: REST-Verbindungsart der arubaoss-Module; switch_attributes.yml
+      #     überschreibt sie im Play mit SSH (network_cli).
+      ansible_connection: local
+      ansible_network_os: arubanetworks.aos_switch.arubaoss  # Do not change

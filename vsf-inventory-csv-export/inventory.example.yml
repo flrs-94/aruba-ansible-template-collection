@@ -17,10 +17,10 @@ all:
       ansible_host: 192.0.2.11
     # EN: ... or by any resolvable DNS name / DE: ... oder per aufloesbarem DNS-Namen
     switch02:
-      ansible_host: switch02.example.net
+      ansible_host: host.example.com
 
   vars:
-    ansible_user: admin
+    ansible_user: example-user
     # EN: placeholder only - override with --ask-pass, -e, or Vault.
     # DE: nur Platzhalter - per --ask-pass, -e oder Vault ueberschreiben.
-    ansible_password: CHANGEME
+    ansible_password: YOUR_PASSWORD

@@ -55,10 +55,10 @@ all:
     switch01:
       ansible_host: 192.0.2.11
     switch02:
-      ansible_host: switch02.example.net
+      ansible_host: host.example.com
   vars:
-    ansible_user: admin
-    ansible_password: CHANGEME        # override at runtime: --ask-pass, -e, or Ansible Vault
+    ansible_user: example-user
+    ansible_password: YOUR_PASSWORD   # override at runtime: --ask-pass, -e, or Ansible Vault
 ```
 
 ---
@@ -220,7 +220,7 @@ This module is meant to be safe to publish as a standalone public repository.
   stack topology. Share those files deliberately, not through git.
 - **All examples use documentation ranges** – [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)
   IPs (`192.0.2.0/24`), [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606)
-  names (`example.net`), [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042#section-2.1.1)
+  names (`example.com`), [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042#section-2.1.1)
   MACs (`00:00:5e:00:53:xx`), placeholder serials. Aruba part numbers (`JL725A`)
   and firmware strings are public product information.
 - **Splitting this out of a larger repo?** Start a fresh history

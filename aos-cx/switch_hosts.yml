@@ -10,8 +10,8 @@ all:
     aoscx_1:
       ansible_host: 192.0.2.11              # management IP or DNS name
   vars:
-    ansible_user: admin
-    ansible_password: CHANGEME               # placeholder – override at runtime / Vault
+    ansible_user: example-user
+    ansible_password: YOUR_PASSWORD          # placeholder – override at runtime / Vault
     ansible_network_os: arubanetworks.aoscx.aoscx
     ansible_connection: arubanetworks.aoscx.aoscx   # REST API via pyaoscx
     ansible_aoscx_validate_certs: false
