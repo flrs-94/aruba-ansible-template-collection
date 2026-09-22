@@ -1,21 +1,25 @@
 ---
 # ============================================================================
-# EN: Manage Trust Anchor (TA) profiles on Aruba AOS-CX switches via REST API.
-#     The certificates and their target switches are defined in certs.yml,
-#     which is loaded separately.
+# EN: Manage Trust-Anchor (TA) profiles on Aruba AOS-CX switches over the REST
+#     API. The desired certificates and their target switches live in the
+#     separately loaded certs.yml.
+#     Flow per host: login -> read current profiles -> diff -> create missing /
+#     replace changed (with confirmation) -> optionally delete orphaned -> logout.
 #
-# DE: Verwaltet Trust-Anchor-(TA-)Profile auf Aruba-AOS-CX-Switches per REST-API.
-#     Die Zertifikate und ihre Zielgeräte stehen in der separat geladenen
-#     certs.yml.
+# DE: Trust-Anchor-(TA-)Profile auf Aruba-AOS-CX-Switches über die REST-API
+#     verwalten. Die Soll-Zertifikate und ihre Ziel-Switches stehen in der
+#     separat geladenen certs.yml.
+#     Ablauf je Host: Login -> Ist-Profile lesen -> Abgleich -> fehlende anlegen /
+#     abweichende ersetzen (nach Bestätigung) -> optional verwaiste löschen -> Logout.
 #
 # EN: Run:  ansible-playbook -i ../switch_hosts.yml play_ca.yml
-#     Add ` -e overwrite_certs=true` for a non-interactive run (CI/CD).
+#     Non-interactive: add ` -e overwrite_certs=true` (skips all prompts).
 # DE: Aufruf: ansible-playbook -i ../switch_hosts.yml play_ca.yml
-#     Mit ` -e overwrite_certs=true` läuft das Playbook ohne Rückfragen (CI/CD).
+#     Nicht-interaktiv: ` -e overwrite_certs=true` (überspringt alle Rückfragen).
 # ============================================================================
-- name: Deploy TA certificates to Aruba AOS-CX switches via REST API
-  # EN: Every inventory host is processed; per certificate, the target is
-  #     additionally selected via its target_hosts entry.
+- name: Deploy CA certificates to Aruba AOS-CX switches via REST API
+  # EN: Every inventory host is processed; the actual target selection also
+  #     happens per certificate via its target_hosts entry.
   # DE: Alle Hosts aus dem Inventory werden verarbeitet; die Zielauswahl erfolgt
   #     zusätzlich pro Zertifikat über dessen target_hosts-Eintrag.
   hosts: all
@@ -23,52 +27,57 @@
   # DE: Für die REST-Aufrufe werden keine Ansible-Facts vom Switch benötigt.
   gather_facts: false
 
-  # EN: Load the target certificates and their mapping to the target switches.
+  # EN: Loads the desired certificates and their target-switch mapping.
   # DE: Lädt die Soll-Zertifikate und die Zuordnung zu den Ziel-Switches.
   vars_files:
     - certs.yml
 
   vars:
-    # EN: By default, changes to existing certificates must be confirmed.
-    #     For a non-interactive run, disable this with -e overwrite_certs=true.
-    #     CAUTION: this also auto-confirms deleting orphaned TA profiles (8e-8g).
+    # EN: By default, changes to existing certificates must be confirmed
+    #     interactively. For a non-interactive run set -e overwrite_certs=true.
     # DE: Standardmäßig müssen Änderungen an bestehenden Zertifikaten bestätigt
     #     werden. Für einen nicht-interaktiven Lauf mit -e overwrite_certs=true
-    #     deaktivieren. ACHTUNG: bestätigt auch das Löschen verwaister
-    #     TA-Profile (8e-8g) automatisch.
+    #     deaktivieren.
+    # EN: Always evaluated as `overwrite_certs | bool`: -e passes a string, and
+    #     ansible-core >= 2.19 requires boolean conditionals.
+    # DE: Wird immer als `overwrite_certs | bool` ausgewertet: -e übergibt einen
+    #     String, und ansible-core >= 2.19 verlangt boolesche Bedingungen.
     overwrite_certs: false
-    # EN: Global TLS verification for all REST calls.
-    #     Should be true in production environments.
-    # DE: Globale TLS-Prüfung für alle REST-Aufrufe.
-    #     In produktiven Umgebungen sollte dieser Wert auf true stehen.
+    # EN: Global TLS verification for every REST call. Should be true in
+    #     production (with a trusted CA for the switch certificates).
+    # DE: Globale TLS-Prüfung für alle REST-Aufrufe. In produktiven Umgebungen
+    #     auf true stellen (mit vertrauenswürdiger CA für die Switch-Zertifikate).
     validate_certs: false
 
+    # EN: Base URL of the switch REST API. inventory_hostname (not ansible_host)
+    #     is used on purpose so the value stays correct under delegate_to: localhost.
+    # DE: Basis-URL der Switch-REST-API. Bewusst über inventory_hostname (nicht
+    #     ansible_host), damit der Wert unter delegate_to: localhost korrekt bleibt.
+    rest_base: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04"
+
   tasks:
-    # EN: The block groups login, comparison and changes. `always` makes sure
-    #     the API session is closed even if a task fails.
+    # EN: The block bundles login, diff and changes. `always` makes sure the
+    #     API session is closed even if a task fails.
     # DE: Der Block bündelt Login, Abgleich und Änderungen. `always` sorgt dafür,
     #     dass die API-Sitzung auch bei einem Fehler beendet wird.
-    - name: Manage TA certificates via REST API
+    - name: Run TA-profile management over REST API
       block:
-        # EN: The login endpoint expects user name and password as URL
-        #     parameters. The response's set_cookie holds the session ID for
-        #     the following requests.
+        # EN: The login endpoint expects username and password as URL params.
+        #     The response carries the session id in set_cookie for later requests.
         # DE: Der Login-Endpunkt erwartet Benutzername und Passwort als
         #     URL-Parameter. Die Antwort enthält in set_cookie die Session-ID
         #     für die folgenden Requests.
         - name: 1. Log in to the AOS-CX REST API
           ansible.builtin.uri:
-            # EN: ansible_host is the switch's management IP or DNS name.
+            # EN: ansible_host is the management IP or DNS name of the switch.
             # DE: ansible_host ist die Management-IP oder der DNS-Name des Switches.
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/login?username={{ hostvars[inventory_hostname].ansible_user }}&password={{ hostvars[inventory_hostname].ansible_password }}"
-            # EN: The login is an HTTP POST. / DE: Der Login wird per HTTP POST ausgeführt.
+            url: "{{ rest_base }}/login?username={{ hostvars[inventory_hostname].ansible_user }}&password={{ hostvars[inventory_hostname].ansible_password }}"
             method: POST
-            # EN: The switch certificate is not verified against the controller's
-            #     CA here. Use a trusted CA in production environments.
-            # DE: Das Switch-Zertifikat wird hier nicht gegen die CA des
-            #     Controllers geprüft. Produktiv eine vertrauenswürdige CA nutzen.
+            # EN: Do not verify the switch TLS certificate here (see vars comment).
+            # DE: Das TLS-Zertifikat des Switches hier nicht prüfen (siehe vars-Kommentar).
             validate_certs: "{{ validate_certs }}"
-            # EN: A successful login returns HTTP 200. / DE: Ein erfolgreicher Login liefert HTTP 200.
+            # EN: A successful login returns HTTP 200.
+            # DE: Ein erfolgreicher Login liefert HTTP 200.
             status_code: [200]
           # EN: Stores the login response including the session cookie.
           # DE: Speichert die Login-Antwort einschließlich des Session-Cookies.
@@ -80,44 +89,41 @@
           # DE: Das Passwort steht in der URL - daher nicht im Log ausgeben.
           no_log: true
 
-        # EN: Before any change, query the current state of each TA profile.
-        #     HTTP 200 = profile found; HTTP 404 = profile missing.
+        # EN: Before any change, read the current state of each TA profile.
+        #     HTTP 200 = profile exists; HTTP 404 = profile missing.
         # DE: Vor jeder Änderung wird der Ist-Zustand des jeweiligen TA-Profils
-        #     abgefragt. HTTP 200 = Profil gefunden; HTTP 404 = Profil fehlt.
+        #     abgefragt. HTTP 200 = Profil vorhanden; HTTP 404 = Profil fehlt.
         - name: 2. Query existing TA profiles on the switch
           ansible.builtin.uri:
-            # EN: The profile name is used as URL path. / DE: Der Profilname wird als URL-Pfad verwendet.
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/system/pki_ta_profiles/{{ item.name }}?depth=2"
-            # EN: Read-only. / DE: Das Profil wird nur gelesen.
+            # EN: The profile name is used as the URL path.
+            # DE: Der Profilname wird als URL-Pfad verwendet.
+            url: "{{ rest_base }}/system/pki_ta_profiles/{{ item.name }}?depth=2"
             method: GET
-            # EN: The session from the login authenticates the request.
+            # EN: The login session authenticates the request.
             # DE: Die Session aus dem Login authentifiziert den Request.
             headers:
               Cookie: "{{ api_login.set_cookie }}"
-            # EN: See the login task. / DE: Siehe Begründung beim Login.
             validate_certs: "{{ validate_certs }}"
             # EN: A missing profile is an expected state, not an error.
             # DE: Ein fehlendes Profil ist ein erwarteter Zustand und kein Fehler.
             status_code: [200, 404]
-          # EN: Checks every TA profile defined in certs.yml.
+          # EN: Check every TA profile defined in certs.yml.
           # DE: Prüft jedes in certs.yml definierte TA-Profil.
           loop: "{{ ta_profiles }}"
           loop_control:
-            # EN: Readable output per loop iteration. / DE: Lesbare Ausgabe pro Schleifendurchlauf.
-            label: "Check Profile: {{ item.name }}"
-          # EN: Stores all GET results for the following comparison.
+            label: "Check profile: {{ item.name }}"
+          # EN: Store all GET results for the following comparison.
           # DE: Speichert alle GET-Ergebnisse für den anschließenden Vergleich.
           register: existing_profiles
           when:
             # EN: Only entries with a target mapping are processed.
             # DE: Nur Einträge mit Zielzuordnung werden verarbeitet.
             - item.target_hosts is defined
-            # EN: 'all' applies to every inventory host; otherwise the host
-            #     must be listed explicitly in target_hosts.
+            # EN: 'all' applies to every inventory host; otherwise the host must
+            #     be named explicitly in target_hosts.
             # DE: 'all' gilt für jeden Inventory-Host; ansonsten muss der Host
             #     ausdrücklich in target_hosts genannt sein.
             - "'all' in item.target_hosts or inventory_hostname in item.target_hosts"
-          # EN: The REST query runs from the controller. / DE: Die REST-Abfrage läuft vom Controller aus.
           delegate_to: localhost
 
         # EN: Must exist up front in case no profile applies to this host
@@ -128,45 +134,49 @@
           ansible.builtin.set_fact:
             cert_status_list: []
 
-        # EN: Build a compact status from every GET result:
-        #     create = missing, identical = unchanged, update = different.
+        # EN: Turn each GET result into a compact status:
+        #     create = missing, identical = unchanged, update = differs.
         # DE: Aus jedem GET-Ergebnis wird ein kompakter Status erstellt:
         #     create = fehlt, identical = unverändert, update = abweichend.
-        - name: 4. Compare certificates and determine the action
+        - name: 4. Diff certificates and decide the action
           ansible.builtin.set_fact:
-            # EN: Each iteration appends one status entry.
+            # EN: The list grows by one status entry per loop iteration.
             # DE: Die Liste wird pro Schleifendurchlauf um einen Status-Eintrag erweitert.
-            cert_status_list: "{{ cert_status_list + [ {'name': item.item.name, 'item': item.item, 'action': new_action | trim} ] }}"
+            cert_status_list: "{{ cert_status_list + [{'name': item.item.name, 'item': item.item, 'action': new_action | trim}] }}"
           vars:
-            # EN: Strip leading/trailing whitespace from the target certificate.
+            # EN: Trim whitespace around the desired certificate.
             # DE: Entfernt Leerzeichen am Anfang und Ende des Soll-Zertifikats.
             cert_data_clean: "{{ item.item.cert_data | trim }}"
             # EN: Compare the certificate text reported by the switch with the target value.
             # DE: Vergleicht den vom Switch gemeldeten Zertifikatstext mit dem Sollwert.
+            # EN: Folded (>-): the line breaks inside the {% ... %} tags become
+            #     harmless spaces; the surrounding | trim removes edge whitespace.
+            # DE: Gefaltet (>-): die Zeilenumbrüche innerhalb der {% ... %}-Tags
+            #     werden zu harmlosen Leerzeichen; das umgebende | trim entfernt Rand-Whitespace.
             new_action: >-
-              {% if item.status == 404 %}create{% elif item.status == 200 and item.json is defined and item.json.certificate is defined and item.json.certificate | trim == cert_data_clean %}identical{% else %}update{% endif %}
-          # EN: Processes the stored responses from task 2.
+              {% if item.status == 404 %}create{% elif item.status == 200
+              and item.json is defined and item.json.certificate is defined
+              and item.json.certificate | trim == cert_data_clean %}identical{% else %}update{% endif %}
+          # EN: Process the stored responses from task 2.
           # DE: Verarbeitet die gespeicherten Antworten aus Task 2.
           loop: "{{ existing_profiles.results }}"
           loop_control:
-            # EN: Shows the profile currently analysed. / DE: Zeigt den Namen des gerade analysierten Profils.
             label: "Analyze: {{ item.item.name | default('N/A') }}"
           # EN: Skipped inventory entries must not produce a status.
           # DE: Übersprungene Inventory-Einträge dürfen keinen Status erzeugen.
           when: item.skipped is not defined
 
-        # EN: Show the determined action before any change is made.
+        # EN: Show the decided action before making any change.
         # DE: Zeigt die ermittelte Aktion an, bevor Änderungen vorgenommen werden.
-        - name: 5. Show status summary
+        - name: 5. Show the status summary
           ansible.builtin.debug:
             msg: "Profile '{{ item.name }}': status = {{ item.action | upper }}"
-          # EN: One output per status entry. / DE: Jeder Status-Eintrag wird separat ausgegeben.
           loop: "{{ cert_status_list }}"
           loop_control:
             label: "{{ item.name }}"
 
-        # EN: Overwriting is only potentially destructive for existing but
-        #     different profiles. New profiles are created without asking.
+        # EN: Only existing but differing profiles are potentially destructive to
+        #     overwrite. New profiles are created without asking.
         # DE: Nur bei vorhandenen, aber abweichenden Profilen ist eine
         #     Überschreibung potenziell destruktiv. Neue Profile werden ohne
         #     Nachfrage angelegt.
@@ -174,33 +184,34 @@
           ansible.builtin.pause:
             # EN: ANSI sequences colour the warning red in the terminal.
             # DE: ANSI-Sequenzen färben den Warnhinweis im Terminal rot.
-            prompt: "\u001b[31m[WARNING / ACHTUNG]\u001b[0m Differing certificates were found on the switch! Overwrite them? / Abweichende Zertifikate auf dem Switch gefunden! Überschreiben? (yes/no)"
-          # EN: Stores the answer for the following abort check.
+            prompt: "\u001b[31m[!]\u001b[0m Overwrite differing certificates on the switch? / Abweichende Zertifikate auf dem Switch überschreiben? (yes/no)"
+          # EN: Store the answer for the following abort check.
           # DE: Speichert die Antwort für den folgenden Abbruch-Check.
           register: prompt_overwrite
           when:
-            # EN: With overwrite_certs=true the interactive prompt is skipped.
+            # EN: overwrite_certs=true skips the interactive prompt.
             # DE: Bei overwrite_certs=true wird die interaktive Nachfrage übersprungen.
             - not (overwrite_certs | bool)
-            # EN: Only asked when at least one update is needed.
+            # EN: The prompt only appears if at least one update is needed.
             # DE: Die Nachfrage erscheint nur, wenn mindestens ein Update nötig ist.
             - cert_status_list | selectattr('action', 'equalto', 'update') | list | length > 0
 
-        # EN: Accepts English and German confirmations; anything else aborts.
-        # DE: Akzeptiert englische und deutsche Bestätigungen; alles andere bricht ab.
-        - name: 6b. Show a notice if the user did not confirm
+        # EN: Accepts German and English confirmations; anything else aborts.
+        # DE: Akzeptiert deutsche und englische Bestätigungen; alles andere bricht ab.
+        - name: 6b. Notice if the user did not confirm
           ansible.builtin.debug:
             msg: "Aborted by user. Certificates were NOT overwritten. / Vom Benutzer abgebrochen. Zertifikate wurden NICHT überschrieben."
           when: &user_declined
-            # EN: If the pause was skipped there is no user_input variable.
+            # EN: A skipped pause leaves no user_input variable.
             # DE: Bei übersprungener Pause gibt es keine user_input-Variable.
             - prompt_overwrite.user_input is defined
-            # EN: Case-insensitive; everything except these values declines.
+            # EN: Case-insensitive; anything but these values is a rejection.
             # DE: Groß-/Kleinschreibung wird ignoriert; alles außer diesen Werten lehnt ab.
             - prompt_overwrite.user_input | lower not in ['y', 'yes', 'j', 'ja']
 
-        # EN: Ends the run for this host cleanly instead of reporting a failure.
-        # DE: Beendet den Lauf für diesen Host sauber, statt ihn als fehlgeschlagen zu melden.
+        # EN: End the run for this host cleanly instead of marking it failed.
+        # DE: Beendet den Lauf für diesen Host sauber, statt ihn als
+        #     fehlgeschlagen zu melden.
         - name: 6c. End the play for this host without certificate changes
           ansible.builtin.meta: end_host
           when: *user_declined
@@ -209,31 +220,28 @@
         # DE: Profile, die noch nicht existieren, werden direkt mit Zertifikat angelegt.
         - name: 7a. Create new TA profiles (POST)
           ansible.builtin.uri:
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/system/pki_ta_profiles"
+            url: "{{ rest_base }}/system/pki_ta_profiles"
             method: POST
-            # EN: Authenticates the request and declares the JSON content.
+            # EN: Authenticates the request and marks the body as JSON.
             # DE: Authentifiziert den Request und kennzeichnet den JSON-Inhalt.
             headers:
               Cookie: "{{ api_login.set_cookie }}"
               Content-Type: "application/json"
-            # EN: Ansible serialises the following body as JSON.
-            # DE: Ansible serialisiert den folgenden Body als JSON.
             body_format: json
             body:
-              # EN: Name and certificate follow the AOS-CX API schema (see certs.sample.json).
-              # DE: Name und Zertifikat entsprechen dem AOS-CX-API-Schema (siehe certs.sample.json).
+              # EN: name and certificate follow the AOS-CX API schema.
+              # DE: Name und Zertifikat entsprechen dem AOS-CX-API-Schema.
               name: "{{ item.item.name }}"
               certificate: "{{ item.item.cert_data | trim }}"
             validate_certs: "{{ validate_certs }}"
-            # EN: Depending on the AOS-CX version, creation returns 200 or 201.
+            # EN: Depending on the AOS-CX version, create returns 200 or 201.
             # DE: Je nach AOS-CX-Version kann das Anlegen 200 oder 201 liefern.
             status_code: [200, 201]
-          # EN: Iterates over the previously determined status values.
-          # DE: Durchläuft die zuvor ermittelten Statuswerte.
           loop: "{{ cert_status_list }}"
           loop_control:
             label: "Create: {{ item.name }}"
-          # EN: Only missing profiles are created. / DE: Nur fehlende Profile werden angelegt.
+          # EN: Only missing profiles are created.
+          # DE: Nur fehlende Profile werden angelegt.
           when: item.action == 'create'
           delegate_to: localhost
 
@@ -243,26 +251,27 @@
         #     TA-Zertifikats nicht zuverlässig. Deshalb wird es zuerst entfernt.
         - name: 7b. Delete the differing TA profile on the switch (DELETE)
           ansible.builtin.uri:
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/system/pki_ta_profiles/{{ item.name }}"
+            url: "{{ rest_base }}/system/pki_ta_profiles/{{ item.name }}"
             method: DELETE
             headers:
               Cookie: "{{ api_login.set_cookie }}"
             validate_certs: "{{ validate_certs }}"
-            # EN: Deletion may be confirmed with 200 or 204.
+            # EN: The delete can be confirmed with 200 or 204.
             # DE: Das Löschen kann mit 200 oder 204 bestätigt werden.
             status_code: [200, 204]
           loop: "{{ cert_status_list }}"
           loop_control:
             label: "Delete old: {{ item.name }}"
-          # EN: Only delete after a detected difference. / DE: Nur nach erkannter Abweichung löschen.
+          # EN: Only delete after a detected difference.
+          # DE: Nur nach erkannter Abweichung löschen.
           when: item.action == 'update'
           delegate_to: localhost
 
-        # EN: Then the same profile is re-created with the certificate from certs.yml.
+        # EN: Then re-create the same profile with the certificate from certs.yml.
         # DE: Danach wird dasselbe Profil mit dem Zertifikat aus certs.yml neu angelegt.
         - name: 7c. Re-create the TA profile with the new certificate (POST)
           ansible.builtin.uri:
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/system/pki_ta_profiles"
+            url: "{{ rest_base }}/system/pki_ta_profiles"
             method: POST
             headers:
               Cookie: "{{ api_login.set_cookie }}"
@@ -275,15 +284,15 @@
             status_code: [200, 201]
           loop: "{{ cert_status_list }}"
           loop_control:
-            label: "Re-Create: {{ item.name }}"
+            label: "Re-create: {{ item.name }}"
           # EN: Only differing profiles are deleted and re-created.
           # DE: Nur abweichende Profile werden gelöscht und neu angelegt.
           when: item.action == 'update'
           delegate_to: localhost
 
-        # EN: Collect the names of all profiles certs.yml assigns to this host.
+        # EN: Collect the names of all profiles that certs.yml defines for this host.
         # DE: Sammelt die Namen aller Profile, die für diesen Host in certs.yml vorgesehen sind.
-        - name: 8a. Collect managed profile names for this host
+        - name: 8a. Collect the managed profile names for this host
           ansible.builtin.set_fact:
             managed_profile_names: "{{ managed_profile_names | default([]) + [item.name] }}"
           loop: "{{ ta_profiles }}"
@@ -293,11 +302,11 @@
             - item.target_hosts is defined
             - "'all' in item.target_hosts or inventory_hostname in item.target_hosts"
 
-        # EN: Query all TA profiles on the switch (not only those from certs.yml).
+        # EN: Query every TA profile present on the switch (not only those from certs.yml).
         # DE: Fragt alle auf dem Switch vorhandenen TA-Profile ab (nicht nur die aus certs.yml).
         - name: 8b. Query all TA profiles on the switch
           ansible.builtin.uri:
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/system/pki_ta_profiles"
+            url: "{{ rest_base }}/system/pki_ta_profiles"
             method: GET
             headers:
               Cookie: "{{ api_login.set_cookie }}"
@@ -306,39 +315,43 @@
           register: all_profiles_on_switch
           delegate_to: localhost
 
-        # EN: Profiles on the switch that are no longer maintained in certs.yml are orphaned.
-        # DE: Profile auf dem Switch, die nicht mehr in certs.yml gepflegt werden, gelten als verwaist.
+        # EN: Profiles on the switch that are no longer maintained in certs.yml
+        #     count as orphaned.
+        # DE: Profile auf dem Switch, die nicht mehr in certs.yml gepflegt werden,
+        #     gelten als verwaist.
         - name: 8c. Determine orphaned TA profiles
           ansible.builtin.set_fact:
             orphaned_profiles: "{{ all_profiles_on_switch.json.keys() | list | difference(managed_profile_names | default([])) }}"
 
         - name: 8d. Show orphaned TA profiles
           ansible.builtin.debug:
-            msg: "Orphaned TA profile on the switch (not in certs.yml) / Verwaistes TA-Profil (nicht in certs.yml): {{ item }}"
+            msg: "Orphaned TA profile on the switch (not in certs.yml): {{ item }}"
           loop: "{{ orphaned_profiles }}"
 
         # EN: Deleting orphaned profiles is destructive, hence a separate confirmation.
         # DE: Löschen verwaister Profile ist destruktiv, daher separate Bestätigung.
         - name: 8e. Ask for confirmation to delete orphaned TA profiles [yes/no]
           ansible.builtin.pause:
-            prompt: "\u001b[31m[WARNING / ACHTUNG]\u001b[0m TA profiles found on the switch that are NO LONGER in certs.yml / TA-Profile gefunden, die NICHT mehr in certs.yml gepflegt werden: {{ orphaned_profiles | join(', ') }}. Delete them? / Löschen? (yes/no)"
+            prompt: "\u001b[31m[!]\u001b[0m Delete the orphaned TA profiles listed above? / Verwaiste TA-Profile (siehe oben) löschen? (yes/no)"
           register: orphan_prompt
           when:
             - not (overwrite_certs | bool)
             - orphaned_profiles | length > 0
 
-        - name: 8f. Show a notice if deletion was not confirmed
+        - name: 8f. Notice if the deletion was not confirmed
           ansible.builtin.debug:
             msg: "Orphaned TA profiles will NOT be deleted. / Verwaiste TA-Profile werden NICHT gelöscht."
           when:
             - orphaned_profiles | length > 0
             - (overwrite_certs | bool) or (orphan_prompt.user_input is defined and orphan_prompt.user_input | lower not in ['y', 'yes', 'j', 'ja'])
 
-        # EN: Deletes orphaned profiles only after explicit confirmation (or with overwrite_certs=true).
-        # DE: Löscht die verwaisten Profile nur nach expliziter Bestätigung (oder bei overwrite_certs=true).
+        # EN: Delete the orphaned profiles only after explicit confirmation
+        #     (or when overwrite_certs=true).
+        # DE: Löscht die verwaisten Profile nur nach expliziter Bestätigung
+        #     (oder bei overwrite_certs=true).
         - name: 8g. Delete orphaned TA profiles
           ansible.builtin.uri:
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/system/pki_ta_profiles/{{ item }}"
+            url: "{{ rest_base }}/system/pki_ta_profiles/{{ item }}"
             method: DELETE
             headers:
               Cookie: "{{ api_login.set_cookie }}"
@@ -353,11 +366,11 @@
           delegate_to: localhost
 
       always:
-        # EN: Closes the API session even if a previous task failed.
+        # EN: Close the API session even if a previous task failed.
         # DE: Beendet die API-Session auch dann, wenn ein vorheriger Task fehlschlägt.
         - name: 9. Log out of the AOS-CX REST API
           ansible.builtin.uri:
-            url: "https://{{ hostvars[inventory_hostname].ansible_host }}/rest/v10.04/logout"
+            url: "{{ rest_base }}/logout"
             method: POST
             headers:
               Cookie: "{{ api_login.set_cookie }}"
@@ -368,5 +381,4 @@
             # DE: Nach einem fehlgeschlagenen Login existiert kein Cookie.
             - api_login is defined
             - api_login.set_cookie is defined
-          # EN: The logout also runs from the controller. / DE: Auch der Logout wird vom Controller ausgeführt.
           delegate_to: localhost

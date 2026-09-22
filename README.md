@@ -7,20 +7,24 @@ Wiederverwendbare, anonymisierte Ansible-Vorlagen für Aruba-Switches
   (REST-API + SSH)
 - CA-Zertifikate als Trust-Anchor-(TA-)Profile auf AOS-CX-Switches einspielen
   und erneuern (REST-API)
+- AAA-/Port-Access-Audit (802.1X, MAC-Auth) aller physischen AOS-CX-Ports mit
+  CSV-Export (REST-API)
 - Beispielkonfiguration für AOS-S-Switches: LACP-Trunks + VLANs (SSH/CLI)
 - SSH-basierte VSF-/Stacking-Inventur aller Switches mit CSV-Export
 
 Alle mitgelieferten Adressen, Zugangsdaten und Namen sind Platzhalter
 ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737): `192.0.2.x` /
-`198.51.100.x`, `*.example.com`, `example-user` / `YOUR_PASSWORD`,
-`YOUR_*_CERTIFICATE_BASE64`).
+`198.51.100.x`, `*.example.com`, `example-user` / `YOUR_PASSWORD`). Die
+mitgelieferten CA-Zertifikate sind selbstsignierte Wegwerf-Beispiele
+(`C=XX, O=Example Organization`).
 
 ## Module
 
 | Ordner | Zweck | Zugriff | Doku |
 |---|---|---|---|
 | [`aos-cx/vlan/`](aos-cx/vlan/) | AOS-CX: VLANs aus einer Soll-Liste anlegen/aktualisieren/löschen + validieren | REST-API (HTTPS) + SSH | [EN](aos-cx/vlan/README.md) · [DE](aos-cx/vlan/README_de.md) |
-| [`aos-cx/certificates/`](aos-cx/certificates/) | AOS-CX: TA-Profile (Root-/Intermediate-CA) abgleichen, anlegen, ersetzen, verwaiste löschen | REST-API (HTTPS) | [EN](aos-cx/certificates/README.md) · [DE](aos-cx/certificates/README_de.md) |
+| [`aos-cx/certs/`](aos-cx/certs/) | AOS-CX: TA-Profile (Root-/Intermediate-CA) abgleichen, anlegen, ersetzen, verwaiste löschen | REST-API (HTTPS) | [EN](aos-cx/certs/README.md) · [DE](aos-cx/certs/README_de.md) |
+| [`aos-cx/aaa/`](aos-cx/aaa/) | AOS-CX: je physischem Port prüfen, ob AAA/Port-Access (802.1X, MAC-Auth) konfiguriert ist → CSV | REST-API (HTTPS) | [EN](aos-cx/aaa/README.md) · [DE](aos-cx/aaa/README_de.md) |
 | [`aos-s/`](aos-s/) | AOS-S: Beispiel für LACP-Trunks + VLANs, Auslesen, `write memory` | SSH/CLI | [EN](aos-s/README.md) · [DE](aos-s/README_de.md) |
 | [`vsf-inventory-csv-export/`](vsf-inventory-csv-export/) | VSF-/Stacking-Zustand aller Switches als CSV exportieren (AOS-CX + AOS-S, Plattform-Autoerkennung) | SSH/CLI | [EN](vsf-inventory-csv-export/README.md) · [DE](vsf-inventory-csv-export/README_de.md) |
 | [`devcontainer/`](devcontainer/) | `requirements.yml` für die Collections + Dev-Container-Setup | – | – |
@@ -36,10 +40,15 @@ aruba-ansible-template-collection/
 │   │   ├── extra                   # Tasks 3-8 als eigenständiges Snippet (Referenz)
 │   │   ├── README.md               # Doku (englisch)
 │   │   └── README_de.md            # Doku (deutsch)
-│   └── certificates/
-│       ├── play_ca.yml             # Playbook: TA-Zertifikate (Root-/Intermediate-CA) einspielen
-│       ├── certs.yml               # Zertifikatsdaten + Zielzuordnung (Platzhalter)
-│       ├── certs.sample.json       # Beispiel-Request-Body der REST-API (Referenz)
+│   ├── certs/
+│   │   ├── play_ca.yml             # Playbook: TA-Profile anlegen/ersetzen/aufräumen + Logout
+│   │   ├── certs.yml               # Soll-Zertifikate + Zielzuordnung (Beispiel: Selbstsignate)
+│   │   ├── README.md               # Doku (englisch)
+│   │   └── README_de.md            # Doku (deutsch)
+│   └── aaa/
+│       ├── play_aaa.yml            # Playbook: AAA-/Port-Access-Status je Port -> CSV
+│       ├── demohost.yml            # Beispiel-Inventory (ein Switch)
+│       ├── exports/                # erzeugte CSV-/JSON-Dateien (git-ignored)
 │       ├── README.md               # Doku (englisch)
 │       └── README_de.md            # Doku (deutsch)
 ├── aos-s/
@@ -95,15 +104,15 @@ Details, `vlans.yml`-Schema und Ablauf der 8 Tasks:
 ## Zertifikate einspielen (AOS-CX)
 
 ```bash
-# Platzhalter in aos-cx/certificates/certs.yml durch eigene CA-Zertifikate ersetzen
-ansible-playbook -i aos-cx/switch_hosts.yml aos-cx/certificates/play_ca.yml
+# Beispiel-Zertifikate in aos-cx/certs/certs.yml durch die eigene CA-Kette ersetzen
+ansible-playbook -i aos-cx/switch_hosts.yml aos-cx/certs/play_ca.yml
 
 # nicht-interaktiv (z. B. CI/CD) mit TLS-Prüfung des Switches
-ansible-playbook -i aos-cx/switch_hosts.yml aos-cx/certificates/play_ca.yml \
+ansible-playbook -i aos-cx/switch_hosts.yml aos-cx/certs/play_ca.yml \
   -e overwrite_certs=true -e validate_certs=true
 ```
 
-Die TA-Profile werden in [`aos-cx/certificates/certs.yml`](aos-cx/certificates/certs.yml)
+Die TA-Profile werden in [`aos-cx/certs/certs.yml`](aos-cx/certs/certs.yml)
 gepflegt (`name`, `target_hosts`, `cert_data` im PEM-Format). Das Playbook meldet
 sich an der REST-API an, legt fehlende Profile an, überschreibt abweichende nur
 nach Bestätigung (`yes`/`no`, deutsch auch `ja`/`j`), bietet das Löschen nicht
@@ -114,8 +123,27 @@ mehr gepflegter Profile an und meldet sich am Ende ab – auch nach einem Fehler
 | `overwrite_certs` | `false` | `true` überspringt alle Bestätigungsabfragen – überschreibt abweichende **und** löscht verwaiste Profile |
 | `validate_certs` | `false` | `true` prüft das TLS-Zertifikat des Switches beim REST-Zugriff |
 
-Details: [`aos-cx/certificates/README.md`](aos-cx/certificates/README.md)
-(englisch) bzw. [`README_de.md`](aos-cx/certificates/README_de.md) (deutsch).
+Details: [`aos-cx/certs/README.md`](aos-cx/certs/README.md)
+(englisch) bzw. [`README_de.md`](aos-cx/certs/README_de.md) (deutsch).
+
+---
+
+## AAA-/Port-Access-Audit (AOS-CX)
+
+```bash
+cd aos-cx/aaa
+ansible-playbook -i demohost.yml play_aaa.yml          # oder -i ../switch_hosts.yml
+```
+
+Ein einziger REST-Aufruf je Switch (`GET /system/interfaces`) liefert alle Ports
+samt Port-Access-Konfiguration; das Playbook schreibt eine CSV mit einer Zeile je
+physischem Port und dem Urteil `YES` / `NO` / `OTHER` (kein Access-Port) /
+`ERROR` (Switch nicht erreichbar). Es liest nur und ändert nichts am Switch. Der
+Bericht landet unter `aos-cx/aaa/exports/` (per `.gitignore` ausgenommen).
+
+Details, CSV-Spalten und Anpassung an die eigene Firmware:
+[`aos-cx/aaa/README.md`](aos-cx/aaa/README.md) (englisch) bzw.
+[`README_de.md`](aos-cx/aaa/README_de.md) (deutsch).
 
 ---
 
@@ -163,7 +191,8 @@ CSV-Spalten und Designentscheidungen:
 - `*_validate_certs: false` bzw. `validate_certs: false` deaktiviert die
   TLS-Prüfung gegenüber dem Switch. In produktiven Umgebungen auf `true` stellen
   und eine vertrauenswürdige CA hinterlegen.
-- `aos-cx/certificates/certs.yml` enthält nur öffentliche CA-Zertifikate –
+- `aos-cx/certs/certs.yml` enthält nur öffentliche CA-Zertifikate –
   niemals private Schlüssel committen.
-- `inventory.yml` und der Ordner `exports/` der VSF-Inventur sind per
-  `.gitignore` ausgenommen – echte Inventardaten gehören nicht ins Repo.
+- `inventory.yml` und der Ordner `exports/` der VSF-Inventur sowie
+  `aos-cx/aaa/exports/` sind per `.gitignore` ausgenommen – echte Inventar- und
+  Audit-Daten gehören nicht ins Repo.

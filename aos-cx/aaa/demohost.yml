@@ -1,0 +1,19 @@
+---
+# EN: Example inventory for the AAA / port-access audit. Copy / adapt for your
+#     switches. NEVER commit real credentials – pass the password at runtime
+#     instead (-e ansible_password=..., --ask-pass) or use Ansible Vault.
+# DE: Beispiel-Inventory für das AAA-/Port-Access-Audit. Kopieren / an die
+#     eigenen Switches anpassen. NIEMALS echte Zugangsdaten committen – das
+#     Passwort zur Laufzeit übergeben (-e ansible_password=..., --ask-pass) oder
+#     Ansible Vault.
+all:
+  hosts:
+    host-one:
+      ansible_host: 192.0.2.11              # management IP or DNS name
+      ansible_user: example-user
+      ansible_password: YOUR_PASSWORD        # placeholder – override at runtime / Vault
+      ansible_network_os: arubanetworks.aoscx.aoscx
+      ansible_connection: arubanetworks.aoscx.aoscx  # REST API via pyaoscx connection method
+      ansible_aoscx_validate_certs: false
+      ansible_aoscx_use_proxy: false
+      ansible_acx_no_proxy: true

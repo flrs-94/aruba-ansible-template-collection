@@ -1,0 +1,89 @@
+---
+# ============================================================================
+# EN: Target state ("source of truth") for the Trust-Anchor (TA) profiles that
+#     the play_ca.yml playbook manages on the AOS-CX switches. Each list entry
+#     is one TA profile (a CA certificate the switch should trust).
+#
+# DE: Soll-Zustand ("Source of Truth") der Trust-Anchor-(TA-)Profile, die das
+#     Playbook play_ca.yml auf den AOS-CX-Switches verwaltet. Jeder Listeneintrag
+#     ist ein TA-Profil (ein CA-Zertifikat, dem der Switch vertrauen soll).
+# ----------------------------------------------------------------------------
+# EN: Schema per list entry
+#   name          (str, required)  TA profile name on the switch (used as the
+#                                  REST API path -> keep it short, no spaces)
+#   target_hosts  (list, required) inventory host names this profile applies to,
+#                                  or ["all"] for every host in the inventory
+#   cert_data     (str, required)  the CA certificate in PEM format, as a block
+#                                  scalar (|-). No leading spaces before
+#                                  "-----BEGIN CERTIFICATE-----".
+#
+# DE: Schema je Listeneintrag
+#   name          (str, Pflicht)   Name des TA-Profils auf dem Switch (wird als
+#                                  REST-API-Pfad genutzt -> kurz, keine Leerzeichen)
+#   target_hosts  (list, Pflicht)  Inventory-Hostnamen, für die das Profil gilt,
+#                                  oder ["all"] für jeden Host im Inventory
+#   cert_data     (str, Pflicht)   das CA-Zertifikat im PEM-Format als
+#                                  Block-Skalar (|-). Keine führenden Leerzeichen
+#                                  vor "-----BEGIN CERTIFICATE-----".
+# ----------------------------------------------------------------------------
+# EN: The certificates below are throw-away self-signed CAs
+#     (C=XX, O=Example Organization) - REPLACE them with your own CA chain.
+# DE: Die Zertifikate unten sind Wegwerf-Selbstsignate
+#     (C=XX, O=Example Organization) - durch die eigene CA-Kette ERSETZEN.
+# ============================================================================
+ta_profiles:
+  # EN: Root CA - trusted on every switch in the inventory.
+  # DE: Root-CA - auf jedem Switch im Inventory vertraut.
+  - name: "example_root_ca"
+    target_hosts:
+      - "all"
+    cert_data: |-
+      -----BEGIN CERTIFICATE-----
+      MIIDPTCCAiWgAwIBAgIUS8ou8oJ0T/3lOgEbt455wn3aGkswDQYJKoZIhvcNAQEL
+      BQAwRjELMAkGA1UEBhMCWFgxHTAbBgNVBAoMFEV4YW1wbGUgT3JnYW5pemF0aW9u
+      MRgwFgYDVQQDDA9FeGFtcGxlIFJvb3QgQ0EwHhcNMjAwMTAxMDAwMDAwWhcNNDAw
+      MTAxMDAwMDAwWjBGMQswCQYDVQQGEwJYWDEdMBsGA1UECgwURXhhbXBsZSBPcmdh
+      bml6YXRpb24xGDAWBgNVBAMMD0V4YW1wbGUgUm9vdCBDQTCCASIwDQYJKoZIhvcN
+      AQEBBQADggEPADCCAQoCggEBAJmGzCb43AAIcBjmnh/ZKYy9xRNRFijJLzwb0o9g
+      hNDBJoLR1ZQbDfGS4GmJEJJfwVhLA3NRZY5b63S1Ek3Xd95s25ZjaehSo3+bnDzX
+      E1HoPQqP3exK3KFyws+pjE0u6hcncYvAIrxRjzV2XfnAagjqVSUIC/ysLA+uhHq6
+      lvjxj/a2stnDJ6+3FQCRYNFLt+VqnWUB0BMb4hAwkO90t/UvtbhydjplvRBdEtIq
+      BnkP9Px6LpPuKe/maiFQj8EwDi2U2iHnhdQXoRsIBLD/LHjC5RBvhAP1x0o2vrX6
+      Tuf3VMkJCV1Q64dImOQEhR55vQW/+R/c7N85sb1F44QTwPsCAwEAAaMjMCEwDwYD
+      VR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwDQYJKoZIhvcNAQELBQADggEB
+      AGW8tuvNZoKk9uModzCIayHw5uZQJ9kgg+JaPajJcb5/AsDxL0FnlIM/Qm5xqx/c
+      6WcB0iru7KXrjPXnPrQiZwINjJRHtDOM+Y57S6AX+VxwWkxHCwhpz/vPTk1zs3TB
+      fgrYs7ZLmk2JJuTjNwRh32MF7RgE/33cxzuUGVQDcDXN23U6u0p7Tg+1NDyS+jpH
+      7xP99YEBE+LmPiH+pdCfWc8O0HU0mfbvxYukr5LWv9zF3Vc7IT5wZF5Gowv92299
+      zfaXim+dO9D9DF6qFw2BII9oJIUJctbWfJOF9I+7ZG+dcEueSrgWwAr5DuKdGJkB
+      aj7nqrvwJcUrZPx+hjnq8YY=
+      -----END CERTIFICATE-----
+
+  # EN: Issuing/intermediate CA - here only for the switch named "aoscx_1".
+  #     Replace "aoscx_1" with host names from your inventory (switch_hosts.yml).
+  # DE: Ausstellende/Intermediate-CA - hier nur für den Switch "aoscx_1".
+  #     "aoscx_1" durch Hostnamen aus dem eigenen Inventory (switch_hosts.yml) ersetzen.
+  - name: "example_intermediate_ca"
+    target_hosts:
+      - "aoscx_1"
+    cert_data: |-
+      -----BEGIN CERTIFICATE-----
+      MIIDRjCCAi6gAwIBAgIUJDWjoCbXNEvWpIxHioMlcktfcFcwDQYJKoZIhvcNAQEL
+      BQAwSTELMAkGA1UEBhMCWFgxHTAbBgNVBAoMFEV4YW1wbGUgT3JnYW5pemF0aW9u
+      MRswGQYDVQQDDBJFeGFtcGxlIElzc3VpbmcgQ0EwHhcNMjAwMTAxMDAwMDAwWhcN
+      NDAwMTAxMDAwMDAwWjBJMQswCQYDVQQGEwJYWDEdMBsGA1UECgwURXhhbXBsZSBP
+      cmdhbml6YXRpb24xGzAZBgNVBAMMEkV4YW1wbGUgSXNzdWluZyBDQTCCASIwDQYJ
+      KoZIhvcNAQEBBQADggEPADCCAQoCggEBAMhCgUGlAL/LxDYyjskxFTjbh9cim20K
+      rttE3vAVs6gZ2NDkusIfhSr1dzWtaVjU2Gyzfk2f5bLevM4eJ1zV5Z1HHEhfylRJ
+      qyBEM7psv0egL2KaRaqVXpboc0c1EEDR9thnwSc8EWSAk3KhriuxmaD+0DSEWEQn
+      VyZeeuJNavKbmpZ7uO7SvcUcEijBt5k819ISPkixnjDmkmacjFlljJtx1JoSJbWH
+      R00nVuSkQF7IRU0vu4r5amm1v8p24eG2+DqDuU1zvqMvaVK6XlCs/L/jMe1TzK9m
+      ezBiqqYT+o7OV182yKDWlkGWivzIMSpiWC4dWJmHywhFuYfTn2onxFECAwEAAaMm
+      MCQwEgYDVR0TAQH/BAgwBgEB/wIBADAOBgNVHQ8BAf8EBAMCAQYwDQYJKoZIhvcN
+      AQELBQADggEBAC3qk5rl70lKzkFqoJGMWnRvr3pSVozAs+wnGvK+dUt3UFxwb/sm
+      H3C4hCttb8gDbQdMpQNso/x66fU7feTO//QqhHMBkgbVVyggoNB+Mmeld7rx1JNk
+      DEpUF/fiO6RbJ0EvGHErn3asqVopepj/i2wlgOV/RAFBSq6jgiNiMMp7r3bybY7X
+      5egH9o6KviV4r/L2qtNxhLDnm9S/3eBgPAqNnHp75BxzyAH4lsZZXfu2VQZ0SM2r
+      YllluCQYGW2zHNGIVCvXEAmM1JhsV49IGVQcXWJ6ODjvuuSyffdiHu856BpnsfcT
+      NFTeDFeOv07ukIQdoyu/9aPW6BXSASvF2DY=
+      -----END CERTIFICATE-----

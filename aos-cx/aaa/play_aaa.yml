@@ -1,0 +1,438 @@
+---
+# ============================================================================
+# EN: Audit which physical ports of one or more Aruba AOS-CX switches have
+#     AAA / port-access authentication (802.1X, MAC-Auth) configured - and
+#     which do not. The query is REST-only: a single
+#     GET /system/interfaces?depth=<n> per switch returns every port with its
+#     nested port-access configuration, so the number of ports or VSF stack
+#     members does not need to be known in advance. The result is written to
+#     one CSV file, one row per physical port.
+#
+# DE: Ermittelt, auf welchen physischen Ports eines oder mehrerer Aruba-
+#     AOS-CX-Switches eine AAA-/Port-Access-Authentifizierung (802.1X,
+#     MAC-Auth) konfiguriert ist - und auf welchen nicht.
+#     Die Abfrage laeuft ausschliesslich ueber REST: ein einziges
+#     GET /system/interfaces?depth=<n> je Switch liefert jeden Port samt seiner
+#     verschachtelten Port-Access-Konfiguration. Die Anzahl der Ports oder
+#     VSF-Stack-Member muss also vorab nicht bekannt sein. Das Ergebnis
+#     landet in einer CSV-Datei, eine Zeile je physischem Port.
+#
+# EN: Run:  ansible-playbook -i demohost.yml play_aaa.yml
+#     The report lands in exports/aaa_port_access_<YYYYMMDD_hhmmss>.csv .
+# DE: Aufruf: ansible-playbook -i demohost.yml play_aaa.yml
+#     Der Bericht landet in exports/aaa_port_access_<JJJJMMTT_hhmmss>.csv .
+# ============================================================================
+- name: Collect AAA / port-access status per port from AOS-CX switches (REST)
+  hosts: all
+  # EN: No Ansible facts are gathered from the switch; every value comes from
+  #     the one REST call below.
+  # DE: Es werden keine Ansible-Facts vom Switch gesammelt; alle Werte stammen
+  #     aus dem einen REST-Aufruf weiter unten.
+  gather_facts: false
+
+  vars:
+    # EN: REST API schema version in the URL path. v10.13 is the default because
+    #     the per-method `radius_server_group` field (the two Server Group
+    #     columns) only exists from that schema on. A switch only serves schema
+    #     versions up to its own firmware - if this 404s on login/query, lower it
+    #     (e.g. v10.09); the Server Group columns then stay empty.
+    # DE: REST-API-Schemaversion im URL-Pfad. v10.13 ist Standard, weil das Feld
+    #     `radius_server_group` je Methode (die zwei Server-Group-Spalten) erst
+    #     ab diesem Schema existiert. Ein Switch liefert nur Schemaversionen bis
+    #     zu seiner eigenen Firmware - liefert dies bei Login/Abfrage 404,
+    #     absenken (z. B. v10.09); die Server-Group-Spalten bleiben dann leer.
+    rest_version: "v10.13"
+
+    # EN: TCP port of the switch REST API. Almost always 443; override per host
+    #     or with -e rest_port=8443 if the switch publishes REST elsewhere.
+    # DE: TCP-Port der Switch-REST-API. Fast immer 443; pro Host oder mit
+    #     -e rest_port=8443 ueberschreiben, falls die REST-API woanders liegt.
+    rest_port: 443
+
+    # EN: Base URL of the switch REST API. inventory_hostname (not ansible_host)
+    #     keeps the value correct under delegate_to: localhost.
+    # DE: Basis-URL der Switch-REST-API. Bewusst ueber inventory_hostname (nicht
+    #     ansible_host), damit der Wert unter delegate_to: localhost stimmt.
+    rest_base: "https://{{ hostvars[inventory_hostname].ansible_host }}:{{ rest_port }}/rest/{{ rest_version }}"
+
+    # EN: REST resource that lists the physical ports. AOS-CX >= ~10.09 serves
+    #     `interfaces` (verified on 10.09); very old firmware used `ports`.
+    #     Override with -e port_resource=ports if the query 404s.
+    # DE: REST-Ressource, die die physischen Ports auflistet. AOS-CX >= ~10.09
+    #     liefert `interfaces` (auf 10.09 verifiziert); sehr alte Firmware nutzte
+    #     `ports`. Mit -e port_resource=ports ueberschreiben, falls die Abfrage
+    #     404 liefert.
+    port_resource: interfaces
+
+    # EN: Global TLS verification for every REST call. Set true in production
+    #     (with a trusted CA for the switch certificates).
+    # DE: Globale TLS-Pruefung fuer alle REST-Aufrufe. In Produktion auf true
+    #     setzen (mit vertrauenswuerdiger CA fuer die Switch-Zertifikate).
+    validate_certs: false
+
+    # EN: depth of the collection query. On a collection GET, depth=1 lists
+    #     interface URIs, depth=2 gives each interface's own attributes with
+    #     child collections still as URI stubs, and depth>=3 expands
+    #     `port_access_auth_configurations` into a dict whose keys are the
+    #     configured auth methods (dot1x / mac-auth). Default 4 also inlines each
+    #     method's sub-config - still tiny because only configured ports have
+    #     any. If `Indicator Keys` shows pac_type=uri, this value is too low.
+    # DE: depth der Collection-Abfrage. Bei einem Collection-GET listet depth=1
+    #     die Interface-URIs, depth=2 liefert je Interface die eigenen Attribute
+    #     (Child-Collections noch als URI-Stub) und depth>=3 klappt
+    #     `port_access_auth_configurations` zu einem Dict auf, dessen Schluessel
+    #     die konfigurierten Auth-Methoden sind (dot1x / mac-auth). Default 4
+    #     fuegt zusaetzlich die Unterkonfig je Methode inline ein - bleibt winzig,
+    #     da nur konfigurierte Ports welche haben. Zeigt `Indicator Keys`
+    #     pac_type=uri, ist dieser Wert zu niedrig.
+    ports_depth: 4
+
+    # EN: Only these interface attributes are requested (keeps the response and
+    #     the raw dump small and readable). All names verified on AOS-CX 10.09.
+    #     If a firmware rejects the filter with HTTP 400, set -e
+    #     interface_attributes='' to fetch the full objects instead.
+    # DE: Nur diese Interface-Attribute werden angefordert (haelt Antwort und
+    #     Rohdump klein und lesbar). Alle Namen auf AOS-CX 10.09 verifiziert.
+    #     Lehnt eine Firmware den Filter mit HTTP 400 ab, mit
+    #     -e interface_attributes='' die vollen Objekte holen.
+    interface_attributes: "name,admin,vlan_mode,applied_vlan_mode,description,port_access_auth_configurations,port_security"
+
+    # EN: Assembled query string for task 2 (kept here so the task line stays
+    #     short). The attributes filter is dropped when interface_attributes is
+    #     emptied via -e.
+    # DE: Zusammengesetzter Query-String fuer Task 2 (hier gehalten, damit die
+    #     Task-Zeile kurz bleibt). Der attributes-Filter entfaellt, wenn
+    #     interface_attributes per -e geleert wird.
+    ports_query: "depth={{ ports_depth }}{{ ('&attributes=' ~ interface_attributes) if interface_attributes else '' }}"
+
+    # EN: Only ports whose name matches this regex are audited - the default
+    #     keeps physical ports (member/slot/port, e.g. 1/1/24) and drops LAGs,
+    #     VLAN/loopback interfaces and sub-interfaces.
+    # DE: Nur Ports, deren Name auf diese Regex passt, werden geprueft - der
+    #     Standard behaelt physische Ports (Member/Slot/Port, z. B. 1/1/24) und
+    #     verwirft LAGs, VLAN-/Loopback-Interfaces und Sub-Interfaces.
+    port_filter_regex: '^\d+/\d+/\d+$'
+
+    # EN: Detection contract (verified against AOS-CX 10.09), applied per port
+    #     in task 4:
+    #       - port_access_auth_configurations : dict keyed by configured
+    #         port-access auth method ("dot1x", "mac-auth"). Empty {} = none.
+    #         The column is "YES" only when >= 1 such method is present on an
+    #         access port. port_security is NOT counted (only shown in
+    #         indicator_keys).
+    #     On other firmware, adjust `auth_methods` in task 4 (inspect a real
+    #     port with dump_raw=true).
+    # DE: Erkennungs-Vertrag (gegen AOS-CX 10.09 verifiziert), je Port in Task 4
+    #     angewandt:
+    #       - port_access_auth_configurations : Dict mit Schluessel je
+    #         konfigurierter Port-Access-Auth-Methode ("dot1x", "mac-auth").
+    #         Leeres {} = keine. Die Spalte ist "YES" nur, wenn >= 1 solche
+    #         Methode an einem Access-Port vorliegt. port_security zaehlt NICHT
+    #         (steht nur in indicator_keys).
+    #     Bei anderer Firmware `auth_methods` in Task 4 anpassen (echten Port
+    #     mit dump_raw=true ansehen).
+
+    # EN: Attribute read from each port_access_auth_configurations.<method>
+    #     object for the two "<method> Server Group" columns. Per the AOS-CX API
+    #     reference this is `radius_server_group`, present from schema v10.13 on
+    #     (absent on v10.09 -> columns empty). An empty value on a configured
+    #     method means "inherit the system-level RADIUS server group".
+    # DE: Attribut, das je port_access_auth_configurations.<methode>-Objekt fuer
+    #     die zwei Spalten "<Methode> Server Group" gelesen wird. Laut
+    #     AOS-CX-API-Referenz `radius_server_group`, vorhanden ab Schema v10.13
+    #     (auf v10.09 fehlt es -> Spalten leer). Ein leerer Wert bei einer
+    #     konfigurierten Methode bedeutet "erbt die System-RADIUS-Server-Group".
+    server_group_attr: radius_server_group
+
+    # EN: dump_raw=true also writes the raw per-host interfaces JSON next to the
+    #     CSV - use it to verify the detection contract against your firmware.
+    #     Off by default (the dump can be large and is site data).
+    # DE: dump_raw=true schreibt zusaetzlich das rohe Interfaces-JSON je Host
+    #     neben die CSV - um den Erkennungs-Vertrag gegen die eigene Firmware zu
+    #     pruefen. Standard aus (der Dump kann gross sein und ist standortbezogen).
+    dump_raw: false
+
+    export_dir: "{{ playbook_dir }}/exports"
+
+  tasks:
+    # EN: The block bundles login + query + row building. `rescue` still
+    #     produces one CSV row for an unreachable / erroring switch; `always`
+    #     closes the API session even after a failure.
+    # DE: Der Block buendelt Login + Abfrage + Zeilenaufbau. `rescue` erzeugt
+    #     auch fuer einen nicht erreichbaren / fehlerhaften Switch eine
+    #     CSV-Zeile; `always` beendet die API-Session auch nach einem Fehler.
+    - name: Query port-access status over the REST API
+      block:
+        # EN: The login endpoint takes username/password as URL params; the
+        #     response carries the session id in set_cookie.
+        # DE: Der Login-Endpunkt nimmt Benutzer/Passwort als URL-Parameter; die
+        #     Antwort enthaelt die Session-ID in set_cookie.
+        - name: 1. Log in to the AOS-CX REST API
+          ansible.builtin.uri:
+            url: "{{ rest_base }}/login?username={{ hostvars[inventory_hostname].ansible_user }}&password={{ hostvars[inventory_hostname].ansible_password }}"
+            method: POST
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200]
+          register: api_login
+          changed_when: false
+          delegate_to: localhost
+          no_log: true  # EN: hides the password / DE: verbirgt das Passwort
+
+        # EN: One call returns every interface with its port-access config.
+        #     Note: AOS-CX rejects depth < 1 with HTTP 400; a wrong port_resource
+        #     gives 404. Either way the rescue block below writes an ERROR row.
+        # DE: Ein Aufruf liefert jedes Interface samt Port-Access-Konfig.
+        #     Hinweis: AOS-CX lehnt depth < 1 mit HTTP 400 ab; ein falsches
+        #     port_resource ergibt 404. In beiden Faellen schreibt der
+        #     rescue-Block unten eine ERROR-Zeile.
+        - name: 2. Read all interfaces with their port-access configuration
+          ansible.builtin.uri:
+            url: "{{ rest_base }}/system/{{ port_resource }}?{{ ports_query }}"
+            method: GET
+            headers:
+              Cookie: "{{ api_login.set_cookie }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200]
+          register: ports_resp
+          changed_when: false
+          delegate_to: localhost
+
+        # EN: Optional raw dump for verifying the two key paths (see vars above).
+        # DE: Optionaler Rohdump zum Pruefen der beiden Schluesselpfade (s. o.).
+        - name: 3. Dump the raw interfaces JSON (only with dump_raw=true)
+          ansible.builtin.copy:
+            dest: "{{ export_dir }}/aaa_port_access_raw_{{ inventory_hostname }}.json"
+            mode: "0644"
+            content: "{{ ports_resp.json | to_nice_json }}"
+          delegate_to: localhost
+          when: dump_raw | bool
+
+        # EN: Build one row per physical port.
+        #       auth_methods = keys of port_access_auth_configurations = the
+        #         configured port-access auth methods (dot1x / mac-auth; {}=none).
+        #       "YES" only when >=1 such method is present on an access port.
+        #         port_security is NOT counted (kept in indicator_keys as info).
+        #       <method> server group = per-method radius_server_group
+        #         (server_group_attr) from inside the method object.
+        # DE: Baut eine Zeile je physischem Port.
+        #       auth_methods = Schluessel von port_access_auth_configurations =
+        #         die konfigurierten Port-Access-Auth-Methoden (dot1x / mac-auth;
+        #         {} = keine).
+        #       "YES" nur, wenn >=1 solche Methode an einem Access-Port vorliegt.
+        #         port_security zaehlt NICHT (bleibt zur Info in indicator_keys).
+        #       <Methode> Server-Group = radius_server_group je Methode
+        #         (server_group_attr) aus dem Methoden-Objekt.
+        - name: 4. Build one audit row per physical port
+          ansible.builtin.set_fact:
+            aaa_csv_rows: "{{ aaa_csv_rows | default([]) + [row] }}"
+          loop: "{{ ports_resp.json | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          when: item.key is match(port_filter_regex)
+          vars:
+            # EN: pac = port_access_auth_configurations. At depth >= 3 it is a
+            #     dict keyed by method ("dot1x" / "mac-auth"), each value the
+            #     method's config object; at too low a depth it is a URI string,
+            #     so guard with `is mapping`. dot1x_cfg / macauth_cfg are those
+            #     per-method objects ({} when the method is not configured).
+            # DE: pac = port_access_auth_configurations. Ab depth >= 3 ein Dict
+            #     mit Methoden-Schluessel ("dot1x" / "mac-auth"), Wert je das
+            #     Konfig-Objekt der Methode; bei zu geringer Tiefe ein URI-String,
+            #     daher Absicherung mit `is mapping`. dot1x_cfg / macauth_cfg
+            #     sind diese Objekte ({} wenn die Methode nicht konfiguriert ist).
+            pac: "{{ item.value.port_access_auth_configurations | default({}, true) }}"
+            psec: "{{ item.value.port_security | default({}, true) }}"
+            auth_methods: "{{ pac.keys() | list if pac is mapping else [] }}"
+            dot1x_cfg: "{{ pac['dot1x'] if (pac is mapping and pac['dot1x'] is defined and pac['dot1x'] is mapping) else {} }}"
+            macauth_cfg: "{{ pac['mac-auth'] if (pac is mapping and pac['mac-auth'] is defined and pac['mac-auth'] is mapping) else {} }}"
+            # EN: effective VLAN mode - configured value, else the applied one.
+            #     AAA / port-access authentication only belongs on edge (access)
+            #     ports, so any other mode (trunk / native-untagged / unset
+            #     uplink) is reported as OTHER instead of YES/NO and is not
+            #     counted as "missing AAA".
+            # DE: effektiver VLAN-Modus - konfigurierter Wert, sonst der aktive.
+            #     AAA-/Port-Access-Authentifizierung gehoert nur an Edge-
+            #     (Access-)Ports; jeder andere Modus (Trunk / native-untagged /
+            #     nicht gesetzter Uplink) wird als OTHER statt YES/NO gemeldet
+            #     und nicht als "fehlende AAA" gezaehlt.
+            vlan_mode_eff: "{{ item.value.vlan_mode | default(item.value.applied_vlan_mode, true) | default('', true) }}"
+            row:
+              host: "{{ inventory_hostname }}"
+              ip: "{{ hostvars[inventory_hostname].ansible_host }}"
+              member: "{{ item.key.split('/')[0] }}"
+              port: "{{ item.key }}"
+              admin: "{{ item.value.admin | default('up', true) }}"
+              vlan_mode: "{{ vlan_mode_eff }}"
+              description: "{{ item.value.description | default('', true) }}"
+              aaa_configured: >-
+                {{ 'OTHER' if vlan_mode_eff != 'access'
+                   else ('YES' if (auth_methods | length > 0) else 'NO') }}
+              methods: "{{ auth_methods }}"
+              dot1x_server_group: "{{ dot1x_cfg[server_group_attr] | default('', true) }}"
+              macauth_server_group: "{{ macauth_cfg[server_group_attr] | default('', true) }}"
+              indicator_keys: >-
+                auth_cfg=[{{ auth_methods | join(',') }}]
+                port_security.enable={{ (psec.enable | default(false)) if psec is mapping else false }}
+                pac_type={{ 'dict' if pac is mapping else 'uri' }}
+
+        # EN: Per-host hint so the run output already shows the gaps.
+        # DE: Hinweis je Host, damit die Lauf-Ausgabe die Luecken schon zeigt.
+        - name: 5. Report ports without AAA / port-access for this host
+          ansible.builtin.debug:
+            msg: >-
+              {{ inventory_hostname }}:
+              {{ aaa_csv_rows | default([]) | selectattr('aaa_configured', 'equalto', 'NO') | list | length }}
+              of {{ aaa_csv_rows | default([]) | length }} physical ports WITHOUT AAA port-access
+
+      rescue:
+        # EN: Keep an unreachable / erroring switch visible in the CSV with a
+        #     single N/A row instead of dropping it silently.
+        # DE: Einen nicht erreichbaren / fehlerhaften Switch mit einer einzelnen
+        #     N/A-Zeile in der CSV sichtbar halten, statt ihn stumm wegzulassen.
+        - name: 4r. Emit a single error row for this host
+          ansible.builtin.set_fact:
+            aaa_csv_rows:
+              - host: "{{ inventory_hostname }}"
+                ip: "{{ hostvars[inventory_hostname].ansible_host }}"
+                member: "N/A"
+                port: "N/A"
+                admin: "N/A"
+                vlan_mode: "N/A"
+                description: ""
+                aaa_configured: "ERROR"
+                methods: []
+                indicator_keys: "{{ ansible_failed_result.msg | default('unreachable') }}"
+
+        - name: 5r. Report the failed host
+          ansible.builtin.debug:
+            msg: "{{ inventory_hostname }}: query failed - {{ ansible_failed_result.msg | default('unreachable') }}"
+
+      always:
+        # EN: Close the API session even if a task above failed (AOS-CX has a
+        #     hard session limit - a leaked session blocks later logins).
+        # DE: Die API-Session auch bei einem Fehler oben schliessen (AOS-CX hat
+        #     ein hartes Session-Limit - eine verwaiste Session blockiert
+        #     spaetere Logins).
+        - name: 6. Log out of the AOS-CX REST API
+          ansible.builtin.uri:
+            url: "{{ rest_base }}/logout"
+            method: POST
+            headers:
+              Cookie: "{{ api_login.set_cookie }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200]
+          changed_when: false
+          delegate_to: localhost
+          when:
+            - api_login is defined
+            - api_login.set_cookie is defined
+
+
+# EN: Aggregates the per-host rows and writes them to a single CSV file.
+# DE: Aggregiert die pro Host gesammelten Zeilen und schreibt sie in eine CSV.
+- name: Export the port-access audit as CSV
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    export_dir: "{{ playbook_dir }}/exports"
+
+  tasks:
+    - name: 7. Determine the file-name timestamp once
+      ansible.builtin.set_fact:
+        export_timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+
+    - name: 8. Collect the CSV rows from all hosts
+      ansible.builtin.set_fact:
+        aaa_rows_all: >-
+          {{ groups['all'] | map('extract', hostvars, 'aaa_csv_rows')
+             | select('defined') | list | sum(start=[]) }}
+
+    # EN: Column order (see aaa_csv_header):
+    #     - "AAA Port-Access" up front: YES / NO / OTHER / ERROR per port
+    #       (OTHER = not an access port). Plain text - colour it in
+    #       Excel/LibreOffice via conditional formatting.
+    #     - "Label": unique key per port (<host>-<port>).
+    #     - then host / port context, finally the detected methods and the raw
+    #       indicator keys the decision was based on.
+    #     Separator is ';' so the file opens cleanly in a German locale;
+    #     free-text fields have ';' replaced with ',' so they cannot break the
+    #     column layout.
+    # DE: Spaltenreihenfolge (siehe aaa_csv_header):
+    #     - "AAA Port-Access" ganz vorne: YES / NO / OTHER / ERROR je Port
+    #       (OTHER = kein Access-Port). Reiner Text - in Excel/LibreOffice per
+    #       bedingter Formatierung einfaerben.
+    #     - "Label": eindeutiger Schluessel je Port (<host>-<port>).
+    #     - danach Host-/Port-Kontext, am Ende die erkannten Methoden und die
+    #       rohen Indikator-Schluessel, auf denen die Entscheidung beruht.
+    #     Trennzeichen ';' fuer sauberes Oeffnen im deutschen Gebietsschema;
+    #     in Freitextfeldern wird ';' durch ',' ersetzt, damit sie die
+    #     Spaltenstruktur nicht zerschiessen.
+    - name: 9. Write the CSV file (header + data rows)
+      vars:
+        aaa_csv_header:
+          - AAA Port-Access
+          - Label
+          - Hostname
+          - IP-Address
+          - Stack Member
+          - Port
+          - Admin
+          - VLAN Mode
+          - Description
+          - Detected Methods
+          - dot1x Server Group
+          - mac-auth Server Group
+          - Indicator Keys
+      ansible.builtin.copy:
+        dest: "{{ export_dir }}/aaa_port_access_{{ export_timestamp }}.csv"
+        mode: "0644"
+        content: |
+          {{ aaa_csv_header | join(';') }}
+          {% for row in aaa_rows_all %}
+          {{ [
+               row.aaa_configured | default('ERROR'),
+               row.host ~ '-' ~ (row.port | default('N/A')),
+               row.host,
+               row.ip,
+               row.member | default('N/A'),
+               row.port | default('N/A'),
+               row.admin | default('N/A'),
+               row.vlan_mode | default('') | replace(';', ','),
+               row.description | default('') | replace(';', ','),
+               (row.methods | default([]) | join(',')) or '-',
+               (row.dot1x_server_group | default('') | replace(';', ',')) or '-',
+               (row.macauth_server_group | default('') | replace(';', ',')) or '-',
+               (row.indicator_keys | default('') | replace(';', ',')) or '-',
+             ] | join(';') }}
+          {% endfor %}
+
+    # EN: One summary line per inventory host (= per switch / VSF stack), then a
+    #     grand total. `rows_h` are that host's rows; counts by first-column value.
+    # DE: Eine Zusammenfassungszeile je Inventory-Host (= je Switch / VSF-Stack),
+    #     danach eine Gesamtsumme. `rows_h` sind die Zeilen des Hosts; Zaehlung
+    #     nach dem Wert der ersten Spalte.
+    - name: 10. Audit summary per host / stack
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }} ({{ (rows_h | first).ip | default('N/A') }}):
+          {{ rows_h | length }} ports /
+          {{ rows_h | selectattr('aaa_configured', 'equalto', 'YES') | list | length }} YES /
+          {{ rows_h | selectattr('aaa_configured', 'equalto', 'NO') | list | length }} NO /
+          {{ rows_h | selectattr('aaa_configured', 'equalto', 'OTHER') | list | length }} OTHER /
+          {{ rows_h | selectattr('aaa_configured', 'equalto', 'ERROR') | list | length }} ERROR
+      loop: "{{ aaa_rows_all | map(attribute='host') | unique | list }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        rows_h: "{{ aaa_rows_all | selectattr('host', 'equalto', item) | list }}"
+
+    - name: 11. Audit summary (grand total)
+      ansible.builtin.debug:
+        msg: >-
+          TOTAL {{ aaa_rows_all | map(attribute='host') | unique | list | length }} hosts:
+          {{ aaa_rows_all | length }} ports /
+          {{ aaa_rows_all | selectattr('aaa_configured', 'equalto', 'YES') | list | length }} YES /
+          {{ aaa_rows_all | selectattr('aaa_configured', 'equalto', 'NO') | list | length }} NO /
+          {{ aaa_rows_all | selectattr('aaa_configured', 'equalto', 'OTHER') | list | length }} OTHER /
+          {{ aaa_rows_all | selectattr('aaa_configured', 'equalto', 'ERROR') | list | length }} ERROR

@@ -18,6 +18,10 @@ vsf-inventory-csv-export/inventory*.yml
 vsf-inventory-csv-export/exports/*
 !vsf-inventory-csv-export/exports/.gitkeep
 
+# AOS-CX AAA port-access audit – generated reports / erzeugte Berichte
+aos-cx/aaa/exports/*
+!aos-cx/aaa/exports/.gitkeep
+
 # Editor / Editor
 *.code-workspace
 .idea/

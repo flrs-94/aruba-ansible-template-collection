@@ -1,4 +1,0 @@
-{
-  "name": "example_root_ca",
-  "certificate": "-----BEGIN CERTIFICATE-----\nYOUR_ROOT_CA_CERTIFICATE_BASE64\n-----END CERTIFICATE-----"
-}
